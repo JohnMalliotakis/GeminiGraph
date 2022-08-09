@@ -38,7 +38,7 @@ void compute(Graph<Empty> * graph) {
 
   for (int i_i=0;active_vertices>0;i_i++) {
     if (graph->partition_id==0) {
-      printf("active(%d)>=%u\n", i_i, active_vertices);
+      printf("active(%d)>=%lu\n", i_i, active_vertices);
     }
     active_out->clear();
     active_vertices = graph->process_edges<VertexId,VertexId>(
@@ -90,7 +90,7 @@ void compute(Graph<Empty> * graph) {
   graph->gather_vertex_array(label, 0);
   if (graph->partition_id==0) {
     VertexId * count = graph->alloc_vertex_array<VertexId>();
-    graph->fill_vertex_array(count, 0u);
+    graph->fill_vertex_array(count, 0lu);
     for (VertexId v_i=0;v_i<graph->vertices;v_i++) {
       count[label[v_i]] += 1;
     }
@@ -100,7 +100,7 @@ void compute(Graph<Empty> * graph) {
         components += 1;
       }
     }
-    printf("components = %u\n", components);
+    printf("components = %lu\n", components);
   }
   
   graph->dealloc_vertex_array(label);
@@ -110,6 +110,7 @@ void compute(Graph<Empty> * graph) {
 
 int main(int argc, char ** argv) {
   MPI_Instance mpi(&argc, &argv);
+  char *end;
 
   if (argc<3) {
     printf("cc [file] [vertices]\n");
@@ -118,7 +119,8 @@ int main(int argc, char ** argv) {
 
   Graph<Empty> * graph;
   graph = new Graph<Empty>();
-  graph->load_undirected_from_directed(argv[1], std::atoi(argv[2]));
+  //graph->load_undirected_from_directed(argv[1], std::atoi(argv[2]));
+  graph->load_undirected_from_directed(argv[1], std::strtoul(argv[2], &end, 10));
 
   compute(graph);
   for (int run=0;run<5;run++) {

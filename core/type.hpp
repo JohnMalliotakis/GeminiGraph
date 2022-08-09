@@ -21,7 +21,10 @@ Copyright (c) 2015-2016 Xiaowei Zhu, Tsinghua University
 
 struct Empty { };
 
-typedef uint32_t VertexId;
+//typedef uint32_t VertexId;
+// jmal: support clueweb huge dataset
+// by using 64 bit vertex IDs
+typedef uint64_t VertexId;
 typedef uint64_t EdgeId;
 
 template <typename EdgeData>

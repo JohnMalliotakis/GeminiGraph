@@ -141,28 +141,32 @@ public:
   MessageBuffer *** recv_buffer; // MessageBuffer* [partitions] [sockets]; numa-aware
 
   Graph() {
-    //threads = numa_num_configured_cpus();
+    threads = numa_num_configured_cpus();
+#if 0
     char *omp_env_threads = getenv("OMP_NUM_THREADS");
     if(!omp_env_threads){
 	    fprintf(stderr, "Export OMP_NUM_THREADS to configure the amount of threads to use!\n");
 	    assert(false);
     }
-    threads = atoi(omp_env_threads);
+    threads = std::atoi(omp_env_threads);
     assert(threads > 0);
 
     if(threads > numa_num_configured_cpus())
 	    fprintf(stderr, "WARNING: Configured threads = %d, available hardware threads: %d\n",
 			    threads, numa_num_configured_cpus());
-
+#endif
+    
     sockets = numa_num_configured_nodes();
     threads_per_socket = threads / sockets;
 
+#if 0
     if(!threads_per_socket){
 	    fprintf(stderr, "WARNING: Attempt to distribute %d threads over %d NUMA nodes, defaulting to %d initial nodes\n",
 			    threads, sockets, threads);
 	    sockets = threads;
 	    threads_per_socket = 1;
     }
+#endif
 
     init();
   }
@@ -183,12 +187,13 @@ public:
     assert( numa_available() != -1 );
     assert( sizeof(unsigned long) == 8 ); // assume unsigned long is 64-bit
 
-    char nodestring[sockets*2+1];
+    char nodestring[sockets*2+2];
     nodestring[0] = '0';
     for (int s_i=1;s_i<sockets;s_i++) {
       nodestring[s_i*2-1] = ',';
       nodestring[s_i*2] = '0'+s_i;
     }
+    nodestring[sockets*2+1] = '\0';
     struct bitmask * nodemask = numa_parse_nodestring(nodestring);
     numa_set_interleave_mask(nodemask);
 
@@ -379,7 +384,7 @@ public:
     this->edges = total_bytes / edge_unit_size;
     #ifdef PRINT_DEBUG_MESSAGES
     if (partition_id==0) {
-      printf("|V| = %u, |E| = %lu\n", vertices, edges);
+      printf("|V| = %lu, |E| = %lu\n", vertices, edges);
     }
     #endif
 
@@ -462,7 +467,7 @@ public:
         for (VertexId v_i=partition_offset[i];v_i<partition_offset[i+1];v_i++) {
           part_out_edges += out_degree[v_i];
         }
-        printf("|V'_%d| = %u |E_%d| = %lu\n", i, partition_offset[i+1] - partition_offset[i], i, part_out_edges);
+        printf("|V'_%d| = %lu |E_%d| = %lu\n", i, partition_offset[i+1] - partition_offset[i], i, part_out_edges);
       }
     }
     MPI_Barrier(MPI_COMM_WORLD);
@@ -499,7 +504,7 @@ public:
           sub_part_out_edges += out_degree[v_i];
         }
         #ifdef PRINT_DEBUG_MESSAGES
-        printf("|V'_%d_%d| = %u |E_%d| = %lu\n", partition_id, s_i, local_partition_offset[s_i+1] - local_partition_offset[s_i], partition_id, sub_part_out_edges);
+        printf("|V'_%d_%d| = %lu |E_%d| = %lu\n", partition_id, s_i, local_partition_offset[s_i+1] - local_partition_offset[s_i], partition_id, sub_part_out_edges);
         #endif
       }
     }
@@ -801,7 +806,8 @@ public:
     this->edges = total_bytes / edge_unit_size;
     #ifdef PRINT_DEBUG_MESSAGES
     if (partition_id==0) {
-      printf("|V| = %u, |E| = %lu\n", vertices, edges);
+      printf("|V| = %lu, |E| = %lu\n", vertices, edges);
+      printf("Edge unit size is %d\n", edge_unit_size);
     }
     #endif
 
@@ -833,9 +839,10 @@ public:
       EdgeId curr_read_edges = curr_read_bytes / edge_unit_size;
       #pragma omp parallel for
       for (EdgeId e_i=0;e_i<curr_read_edges;e_i++) {
+	
         VertexId src = read_edge_buffer[e_i].src;
         VertexId dst = read_edge_buffer[e_i].dst;
-        __sync_fetch_and_add(&out_degree[src], 1);
+	__sync_fetch_and_add(&out_degree[src], 1);
       }
     }
     MPI_Allreduce(MPI_IN_PLACE, out_degree, vertices, vid_t, MPI_SUM, MPI_COMM_WORLD);
@@ -919,7 +926,7 @@ public:
           sub_part_out_edges += out_degree[v_i];
         }
         #ifdef PRINT_DEBUG_MESSAGES
-        printf("|V'_%d_%d| = %u |E^dense_%d_%d| = %lu\n", partition_id, s_i, local_partition_offset[s_i+1] - local_partition_offset[s_i], partition_id, s_i, sub_part_out_edges);
+        printf("|V'_%d_%d| = %lu |E^dense_%d_%d| = %lu\n", partition_id, s_i, local_partition_offset[s_i+1] - local_partition_offset[s_i], partition_id, s_i, sub_part_out_edges);
         #endif
       }
     }

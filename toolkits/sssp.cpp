@@ -36,7 +36,7 @@ void compute(Graph<Weight> * graph, VertexId root) {
   
   for (int i_i=0;active_vertices>0;i_i++) {
     if (graph->partition_id==0) {
-      printf("active(%d)>=%u\n", i_i, active_vertices);
+      printf("active(%d)>=%lu\n", i_i, active_vertices);
     }
     active_out->clear();
     active_vertices = graph->process_edges<VertexId,Weight>(
@@ -96,7 +96,7 @@ void compute(Graph<Weight> * graph, VertexId root) {
         max_v_i = v_i;
       }
     }
-    printf("distance[%u]=%f\n", max_v_i, distance[max_v_i]);
+    printf("distance[%lu]=%f\n", max_v_i, distance[max_v_i]);
   }
 
   graph->dealloc_vertex_array(distance);
@@ -106,6 +106,7 @@ void compute(Graph<Weight> * graph, VertexId root) {
 
 int main(int argc, char ** argv) {
   MPI_Instance mpi(&argc, &argv);
+  char *end;
 
   if (argc<4) {
     printf("sssp [file] [vertices] [root]\n");
@@ -114,8 +115,11 @@ int main(int argc, char ** argv) {
 
   Graph<Weight> * graph;
   graph = new Graph<Weight>();
-  graph->load_directed(argv[1], std::atoi(argv[2]));
-  VertexId root = std::atoi(argv[3]);
+  //graph->load_directed(argv[1], std::atoi(argv[2]));
+  //VertexId root = std::atoi(argv[3]);
+  graph->load_directed(argv[1], std::strtoul(argv[2], &end, 10));
+  end = NULL;
+  VertexId root = std::strtoul(argv[3], &end, 10);
 
   compute(graph, root);
   for (int run=0;run<5;run++) {

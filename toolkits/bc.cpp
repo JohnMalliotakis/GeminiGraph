@@ -47,7 +47,7 @@ void compute(Graph<Empty> * graph, VertexId root) {
   }
   for (i_i=0;active_vertices>0;i_i++) {
     if (graph->partition_id==0) {
-      printf("active(%d)>=%u\n", i_i, active_vertices);
+      printf("active(%lu)>=%lu\n", i_i, active_vertices);
     }
     VertexSubset * active_out = graph->alloc_vertex_subset();
     active_out->clear();
@@ -233,7 +233,7 @@ void compute_compact(Graph<Empty> * graph, VertexId root) {
   }
   for (i_i=0;active_vertices>0;i_i++) {
     if (graph->partition_id==0) {
-      printf("active(%d)>=%u\n", i_i, active_vertices);
+      printf("active(%lu)>=%lu\n", i_i, active_vertices);
     }
     active_out->clear();
     graph->process_edges<VertexId,double>(
@@ -405,6 +405,7 @@ void compute_compact(Graph<Empty> * graph, VertexId root) {
 
 int main(int argc, char ** argv) {
   MPI_Instance mpi(&argc, &argv);
+  char *end;
 
   if (argc<4) {
     printf("bc [file] [vertices] [root]\n");
@@ -413,8 +414,11 @@ int main(int argc, char ** argv) {
 
   Graph<Empty> * graph;
   graph = new Graph<Empty>();
-  VertexId root = std::atoi(argv[3]);
-  graph->load_directed(argv[1], std::atoi(argv[2]));
+  //VertexId root = std::atoi(argv[3]);
+  VertexId root = std::strtoul(argv[3], &end, 10);
+  end = NULL;
+  //graph->load_directed(argv[1], std::atoi(argv[2]));
+  graph->load_directed(argv[1], std::strtoul(argv[2], &end, 10));
 
   #if COMPACT
   compute_compact(graph, root);

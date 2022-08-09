@@ -120,7 +120,7 @@ void compute(Graph<Empty> * graph, int iterations) {
     for (VertexId v_i=0;v_i<graph->vertices;v_i++) {
       if (curr[v_i] > curr[max_v_i]) max_v_i = v_i;
     }
-    printf("pr[%u]=%lf\n", max_v_i, curr[max_v_i]);
+    printf("pr[%lu]=%lf\n", max_v_i, curr[max_v_i]);
   }
 
   graph->dealloc_vertex_array(curr);
@@ -130,6 +130,7 @@ void compute(Graph<Empty> * graph, int iterations) {
 
 int main(int argc, char ** argv) {
   MPI_Instance mpi(&argc, &argv);
+  char *end;
 
   if (argc<4) {
     printf("pagerank [file] [vertices] [iterations]\n");
@@ -138,7 +139,8 @@ int main(int argc, char ** argv) {
 
   Graph<Empty> * graph;
   graph = new Graph<Empty>();
-  graph->load_directed(argv[1], std::atoi(argv[2]));
+  //graph->load_directed(argv[1], std::atol(argv[2]));
+  graph->load_directed(argv[1], std::strtoul(argv[2], &end, 10));
   int iterations = std::atoi(argv[3]);
 
   compute(graph, iterations);

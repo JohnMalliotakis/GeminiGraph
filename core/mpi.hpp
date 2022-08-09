@@ -36,6 +36,11 @@ MPI_Datatype get_mpi_data_type() {
     return MPI_LONG;
   } else if (std::is_same<T, unsigned long>::value) {
     return MPI_UNSIGNED_LONG;
+  } else if (std::is_same<T, uint64_t>::value) {
+#ifdef PRINT_DEBUG_MESSAGES
+	  printf("Found uint64_t datatype for vertices\n");
+#endif
+    return MPI_UINT64_T;
   } else if (std::is_same<T, float>::value) {
     return MPI_FLOAT;
   } else if (std::is_same<T, double>::value) {
