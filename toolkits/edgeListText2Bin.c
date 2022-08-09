@@ -10,6 +10,7 @@
 #include <errno.h>
 #include <stdint.h>
 #include <inttypes.h>
+#include <assert.h>
 
 /*
  * Struct used for binary
@@ -17,19 +18,22 @@
  * according to Gemini specifications
  */
 struct edge_info {
-	unsigned src;
-	unsigned dst;
+	unsigned long src;
+	unsigned long dst;
 	/* Optional */
 	float edge_weight;
 };
 
 struct thread_info {
 	unsigned ID;
-	unsigned initial_offset; /* In edges */
+	/* In edges */
+	unsigned initial_offset;
 	unsigned edges_to_process;
-	/* edges_to_process - sized output buffer */
-	struct edge_info *output_buf;
+	/* Initial byte offset in output file */
+	char *output_buf;
+	/* Parsing flags */
 	char weighted;
+	char one_indexed;
 	char *input_file;
 };
 
@@ -49,7 +53,7 @@ char *copy_string(char *input)
 		return NULL;
 	}
 
-	ret = strncpy(ret, input, len);
+	ret = strcpy(ret, input);
 
 	return ret;
 }
@@ -69,6 +73,7 @@ void *edge_parsing_thread(void *arg)
 	unsigned long j;
 	char *line_read = NULL;
 	size_t line_size;
+	char *iter = info->output_buf;
 
 	/* Defer cancellation until the cleanup function is properly setup */
 	pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &old_cancel_state);
@@ -78,7 +83,7 @@ void *edge_parsing_thread(void *arg)
 	thread_fp = fopen(info->input_file, "r");
 
 	if(!thread_fp){
-		fprintf(stderr, "Thread %u error on fopen\n", info->ID);
+		fprintf(stderr, "Thread %u error on fopen\n", info->ID + 1);
 		pthread_exit(NULL);
 	}
 	/* 
@@ -90,7 +95,7 @@ void *edge_parsing_thread(void *arg)
 	for(j = 0; j < info->initial_offset; j++){
 		if(getline(&line_read, &line_size, thread_fp) == -1){
 			fprintf(stderr, "Thread %u error on getline for line %lu\n",
-					info->ID, j);
+					info->ID + 1, j + 1);
 			fclose(thread_fp);
 			pthread_exit(NULL);
 		}
@@ -99,30 +104,46 @@ void *edge_parsing_thread(void *arg)
 	}
 	/* Now actually use the lines you read */
 	for(j = 0; j < info->edges_to_process; j++){
+		struct edge_info read_edge;
+
 		if(getline(&line_read, &line_size, thread_fp) == -1){
 			fprintf(stderr, "Thread %u error on getline for line %lu\n",
-					info->ID, j);
+					info->ID, info->initial_offset + j + 1);
 			fclose(thread_fp);
 			pthread_exit(NULL);
 		}
-		if(info->weighted)
-			sscanf(line_read, "%u%u%f", &info->output_buf[j].src,
-					&info->output_buf[j].dst,
-					&info->output_buf[j].edge_weight);
-		else
-			sscanf(line_read, "%u%u", &info->output_buf[j].src,
-					&info->output_buf[j].dst);
-		/* MTX format is 1-based, Gemini is 0-based, adjust */
-		info->output_buf[j].src--;
-		info->output_buf[j].dst--;
-		printf("Thread %u read edge %u - %u at offset %lu\n",
-				info->ID, info->output_buf[j].src, info->output_buf[j].dst,
-				info->initial_offset + j);
+
+		if(info->weighted){
+			sscanf(line_read, "%lu%lu%f", &(read_edge.src), &(read_edge.dst), &(read_edge.edge_weight));
+			if(info->one_indexed){
+				/* Gemini is 0-based, adjust */
+				read_edge.src--;
+				read_edge.dst--;
+			}
+			memcpy((void *)iter, (void *)&(read_edge.src), sizeof(unsigned long));
+			iter += sizeof(unsigned long);
+			memcpy((void *)iter, (void *)&(read_edge.dst), sizeof(unsigned long));
+			iter += sizeof(unsigned long);
+			memcpy((void *)iter, (void *)&(read_edge.edge_weight), sizeof(float));
+			iter += sizeof(float);
+		}else{
+			sscanf(line_read, "%lu%lu", &(read_edge.src), &(read_edge.dst));
+			if(info->one_indexed){
+				/* Gemini is 0-based, adjust */
+				read_edge.src--;
+				read_edge.dst--;
+			}
+			memcpy((void *)iter, (void *)&(read_edge.src), sizeof(unsigned long));
+			iter += sizeof(unsigned long);
+			memcpy((void *)iter, (void *)&(read_edge.dst), sizeof(unsigned long));
+			iter += sizeof(unsigned long);
+		}
+		
 		free(line_read);
 		line_read = NULL;
 	}
 	fclose(thread_fp);
-	fprintf(stderr, "Thread %u done.\n", info->ID);
+	fprintf(stderr, "Thread %u done.\n", info->ID + 1);
 	pthread_cleanup_pop(0);
 	return NULL;
 }
@@ -134,13 +155,16 @@ int main(int argc, char *argv[])
 	unsigned long edges = 1000, edges_per_thread;
 	char *input_path = NULL, *output_path = NULL, *strend;
 	char weighted_graph = 0;
+	char one_indexed = 0;
 	pthread_t *thread_arr = NULL;
 	struct thread_info *info_arr = NULL;
-	struct edge_info *output_buffer = NULL;
 	off_t output_file_size;
 	void *map;
+	size_t size_per_edge;
 
-	while((opt = getopt(argc, argv, "t:e:f:o:wh")) != -1){
+	assert(sizeof(long unsigned) == sizeof(uint64_t));
+
+	while((opt = getopt(argc, argv, "t:e:f:o:wih")) != -1){
 		switch(opt) {
 			case 't':
 				threads = atoi(optarg);
@@ -170,11 +194,16 @@ int main(int argc, char *argv[])
 			case 'w':
 				weighted_graph = 1;
 				break;
+			case 'i':
+				one_indexed = 1;
+				break;
 			case 'h':
-				fprintf(stderr, "Usage: ./adjGraph2Binary -t <num_threads> -e <num_edges> -f <input file path> -o <output file path> [-w: Indicate weighted input]\n");
+				fprintf(stderr, "Usage: %s -t <num_threads> -e <num_edges> -f <input file path> -o <output file path> [-w: Indicate weighted input] [-i: Indicate 1-indexed edge list]\n",
+						argv[0]);
 				exit(0);
 			default:
-				fprintf(stderr, "Usage: ./adjGraph2Binary -t <num_threads> -e <num_edges> -f <input file path> -o <output file path> [-w: Indicate weighted input]\n");
+				fprintf(stderr, "Usage: %s -t <num_threads> -e <num_edges> -f <input file path> -o <output file path> [-w: Indicate weighted input] [-i: Indicate 1-indexed edge list]\n",
+						argv[0]);
 				exit(EXIT_FAILURE);
 				break;
 		}
@@ -210,13 +239,32 @@ int main(int argc, char *argv[])
 		goto out;
 	}
 
-	/* Naive allocation, could fail for very large graphs */
-	output_buffer = (struct edge_info *)malloc(edges * sizeof(struct edge_info));
-	if(!output_buffer){
-		perror("malloc");
+	output_fd = open(output_path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR);
+
+	if(output_fd == -1){
+		perror("open");
 		ret = EXIT_FAILURE;
 		goto out;
 	}
+
+	size_per_edge = weighted_graph ? (2 * sizeof(unsigned long) + sizeof(float)) : (2 * sizeof(unsigned long));
+	output_file_size = edges * size_per_edge;
+
+	if(posix_fallocate(output_fd, 0, output_file_size) == -1){
+		perror("posix_fallocate");
+		ret = EXIT_FAILURE;
+		close(output_fd);
+		goto out;
+	}
+
+	map = mmap(NULL, output_file_size, PROT_READ | PROT_WRITE, MAP_SHARED, output_fd, 0);
+	if(map == MAP_FAILED){
+		perror("mmap");
+		ret = EXIT_FAILURE;
+		close(output_fd);
+		goto out;
+	}
+	madvise(map, output_file_size, MADV_SEQUENTIAL);
 
 	edges_per_thread = edges / threads;
 	
@@ -225,8 +273,9 @@ int main(int argc, char *argv[])
 		info_arr[i].initial_offset = i * edges_per_thread;
 		info_arr[i].edges_to_process = edges_per_thread + ((i == threads - 1) ? (edges % threads) : 0);
 		info_arr[i].weighted = weighted_graph;
+		info_arr[i].one_indexed = one_indexed;
 		info_arr[i].input_file = input_path;
-		info_arr[i].output_buf = &output_buffer[info_arr[i].initial_offset];
+		info_arr[i].output_buf = (char *)map + (i * edges_per_thread * size_per_edge);
 		if(pthread_create(&thread_arr[i], NULL, edge_parsing_thread,
 					(void *)&info_arr[i]) != 0){
 			int j;
@@ -242,60 +291,7 @@ int main(int argc, char *argv[])
 	for(i = 0; i < threads; i++)
 		pthread_join(thread_arr[i], NULL);
 
-
-	output_fd = open(output_path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR);
-
-	if(output_fd == -1){
-		perror("open");
-		ret = EXIT_FAILURE;
-		goto out;
-	}
-	output_file_size = edges * (weighted_graph ? sizeof(struct edge_info) :
-			(sizeof(struct edge_info) - sizeof(float)));
-
-	if(posix_fallocate(output_fd, 0, output_file_size) == -1){
-		perror("posix_fallocate");
-		ret = EXIT_FAILURE;
-		close(output_fd);
-		goto out;
-	}
-#if 0
-	if(weighted_graph){
-		write(output_fd, (void *)output_buffer,
-				edges * sizeof(struct edge_info));
-	}else{
-		unsigned long j;
-		for(j = 0; j < edges; j++)
-			write(output_fd, (void *)&output_buffer[j],
-					sizeof(struct edge_info) -
-					sizeof(float));
-	}
-	fsync(output_fd);
-#endif
-	/* 
-	 * Use memory mapped I/O to take advantage of THP for sequential
-	 * access pattern
-	 */
-	map = mmap(NULL, output_file_size, PROT_READ | PROT_WRITE, MAP_SHARED, output_fd, 0);
-	if(map == MAP_FAILED){
-		perror("mmap");
-		ret = EXIT_FAILURE;
-		close(output_fd);
-		goto out;
-	}
-	madvise(map, output_file_size, MADV_SEQUENTIAL);
-
-	if(weighted_graph){
-		/* One huge memcpy */
-		memcpy(map, output_buffer, edges * sizeof(struct edge_info));
-	}else{
-		unsigned long j;
-		char *iter = (char *)map;
-		for(j = 0; j < edges; j++){
-			memcpy(iter, &output_buffer[j], 2 * sizeof(uint32_t));
-			iter += 2 * sizeof(uint32_t);
-		}
-	}
+	printf("Threads done, msyncing...\n");
 
 	msync(map, output_file_size, MS_SYNC);
 
@@ -316,7 +312,5 @@ out:
 		free(thread_arr);
 	if(info_arr)
 		free(info_arr);
-	if(output_buffer)
-		free(output_buffer);
 	exit(ret);
 }
