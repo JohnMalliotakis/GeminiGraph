@@ -141,9 +141,28 @@ public:
   MessageBuffer *** recv_buffer; // MessageBuffer* [partitions] [sockets]; numa-aware
 
   Graph() {
-    threads = numa_num_configured_cpus();
+    //threads = numa_num_configured_cpus();
+    char *omp_env_threads = getenv("OMP_NUM_THREADS");
+    if(!omp_env_threads){
+	    fprintf(stderr, "Export OMP_NUM_THREADS to configure the amount of threads to use!\n");
+	    assert(false);
+    }
+    threads = atoi(omp_env_threads);
+    assert(threads > 0);
+
+    if(threads > numa_num_configured_cpus())
+	    fprintf(stderr, "WARNING: Configured threads = %d, available hardware threads: %d\n",
+			    threads, numa_num_configured_cpus());
+
     sockets = numa_num_configured_nodes();
     threads_per_socket = threads / sockets;
+
+    if(!threads_per_socket){
+	    fprintf(stderr, "WARNING: Attempt to distribute %d threads over %d NUMA nodes, defaulting to %d initial nodes\n",
+			    threads, sockets, threads);
+	    sockets = threads;
+	    threads_per_socket = 1;
+    }
 
     init();
   }
