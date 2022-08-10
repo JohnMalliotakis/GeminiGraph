@@ -12,18 +12,6 @@
 #include <inttypes.h>
 #include <assert.h>
 
-/*
- * Struct used for binary
- * representation of edge info,
- * according to Gemini specifications
- */
-struct edge_info {
-	unsigned long src;
-	unsigned long dst;
-	/* Optional */
-	float edge_weight;
-};
-
 struct thread_info {
 	unsigned ID;
 	/* In edges */
@@ -104,7 +92,8 @@ void *edge_parsing_thread(void *arg)
 	}
 	/* Now actually use the lines you read */
 	for(j = 0; j < info->edges_to_process; j++){
-		struct edge_info read_edge;
+		unsigned long src = 0, dst = 0;
+		float weight = 0.0;
 
 		if(getline(&line_read, &line_size, thread_fp) == -1){
 			fprintf(stderr, "Thread %u error on getline for line %lu\n",
@@ -113,30 +102,27 @@ void *edge_parsing_thread(void *arg)
 			pthread_exit(NULL);
 		}
 
+		if(info->weighted)
+			sscanf(line_read, "%lu%lu%f", &src, &dst, &weight);
+		else
+			sscanf(line_read, "%lu%lu", &src, &dst);
+
+		if(info->one_indexed){
+			/* Gemini is 0-based, adjust */
+			if(!src || !dst)
+				printf("WARNING: 1-indexed flag but <%lu, %lu> found on line %lu!\n",
+						src, dst, info->initial_offset + j + 1);
+			src--;
+			dst--;
+		}
+
+		memcpy(iter, &src, sizeof(unsigned long));
+		iter += sizeof(unsigned long);
+		memcpy(iter, &dst, sizeof(unsigned long));
+		iter += sizeof(unsigned long);
 		if(info->weighted){
-			sscanf(line_read, "%lu%lu%f", &(read_edge.src), &(read_edge.dst), &(read_edge.edge_weight));
-			if(info->one_indexed){
-				/* Gemini is 0-based, adjust */
-				read_edge.src--;
-				read_edge.dst--;
-			}
-			memcpy((void *)iter, (void *)&(read_edge.src), sizeof(unsigned long));
-			iter += sizeof(unsigned long);
-			memcpy((void *)iter, (void *)&(read_edge.dst), sizeof(unsigned long));
-			iter += sizeof(unsigned long);
-			memcpy((void *)iter, (void *)&(read_edge.edge_weight), sizeof(float));
+			memcpy(iter, &weight, sizeof(float));
 			iter += sizeof(float);
-		}else{
-			sscanf(line_read, "%lu%lu", &(read_edge.src), &(read_edge.dst));
-			if(info->one_indexed){
-				/* Gemini is 0-based, adjust */
-				read_edge.src--;
-				read_edge.dst--;
-			}
-			memcpy((void *)iter, (void *)&(read_edge.src), sizeof(unsigned long));
-			iter += sizeof(unsigned long);
-			memcpy((void *)iter, (void *)&(read_edge.dst), sizeof(unsigned long));
-			iter += sizeof(unsigned long);
 		}
 		
 		free(line_read);
@@ -250,6 +236,10 @@ int main(int argc, char *argv[])
 	size_per_edge = weighted_graph ? (2 * sizeof(unsigned long) + sizeof(float)) : (2 * sizeof(unsigned long));
 	output_file_size = edges * size_per_edge;
 
+	printf("|E| = %lu, bytes per edge: %lu (0x%lx), output file size: %lu bytes\n",
+			edges, size_per_edge, size_per_edge, output_file_size);
+
+	printf("Fallocating...\n");
 	if(posix_fallocate(output_fd, 0, output_file_size) == -1){
 		perror("posix_fallocate");
 		ret = EXIT_FAILURE;
@@ -268,10 +258,13 @@ int main(int argc, char *argv[])
 
 	edges_per_thread = edges / threads;
 	
+	printf("Spawning threads...\n");
 	for(i = 0; i < threads; i++){
 		info_arr[i].ID = (unsigned)i;
 		info_arr[i].initial_offset = i * edges_per_thread;
-		info_arr[i].edges_to_process = edges_per_thread + ((i == threads - 1) ? (edges % threads) : 0);
+		info_arr[i].edges_to_process = edges_per_thread;
+		if(i == threads - 1)
+			info_arr[i].edges_to_process += edges % threads;
 		info_arr[i].weighted = weighted_graph;
 		info_arr[i].one_indexed = one_indexed;
 		info_arr[i].input_file = input_path;
