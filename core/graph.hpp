@@ -141,8 +141,9 @@ public:
   MessageBuffer *** recv_buffer; // MessageBuffer* [partitions] [sockets]; numa-aware
 
   Graph() {
-    threads = numa_num_configured_cpus();
 #if 0
+    threads = numa_num_configured_cpus();
+#endif
     char *omp_env_threads = getenv("OMP_NUM_THREADS");
     if(!omp_env_threads){
 	    fprintf(stderr, "Export OMP_NUM_THREADS to configure the amount of threads to use!\n");
@@ -154,19 +155,16 @@ public:
     if(threads > numa_num_configured_cpus())
 	    fprintf(stderr, "WARNING: Configured threads = %d, available hardware threads: %d\n",
 			    threads, numa_num_configured_cpus());
-#endif
     
     sockets = numa_num_configured_nodes();
     threads_per_socket = threads / sockets;
 
-#if 0
     if(!threads_per_socket){
 	    fprintf(stderr, "WARNING: Attempt to distribute %d threads over %d NUMA nodes, defaulting to %d initial nodes\n",
 			    threads, sockets, threads);
 	    sockets = threads;
 	    threads_per_socket = 1;
     }
-#endif
 
     init();
   }
@@ -358,6 +356,10 @@ public:
         return i;
       }
     }
+    printf("Requested partition id for vertex %lu\n", v_i);
+    for (int i=0;i<partitions;i++)
+	    printf("Partition Offset [%d] = %lu\n",
+			    i, partition_offset[i]);
     assert(false);
   }
 
@@ -449,8 +451,11 @@ public:
       }
     }
     assert(partition_offset[partitions]==vertices);
+    MPI_Allreduce(MPI_IN_PLACE, partition_offset, partitions + 1, vid_t, MPI_MAX, MPI_COMM_WORLD);
     owned_vertices = partition_offset[partition_id+1] - partition_offset[partition_id];
+    
     // check consistency of partition boundaries
+#if 0
     VertexId * global_partition_offset = new VertexId [partitions + 1];
     MPI_Allreduce(partition_offset, global_partition_offset, partitions + 1, vid_t, MPI_MAX, MPI_COMM_WORLD);
     for (int i=0;i<=partitions;i++) {
@@ -460,6 +465,7 @@ public:
     for (int i=0;i<=partitions;i++) {
       assert(partition_offset[i] == global_partition_offset[i]);
     }
+#endif
     #ifdef PRINT_DEBUG_MESSAGES
     if (partition_id==0) {
       for (int i=0;i<partitions;i++) {
@@ -472,7 +478,7 @@ public:
     }
     MPI_Barrier(MPI_COMM_WORLD);
     #endif
-    delete [] global_partition_offset;
+    //delete [] global_partition_offset;
     {
       // NUMA-aware sub-chunking
       local_partition_offset = new VertexId [sockets + 1];
@@ -861,6 +867,13 @@ public:
         for (VertexId v_i=partition_offset[i];v_i<vertices;v_i++) {
           got_edges += out_degree[v_i] + alpha;
           if (got_edges > expected_chunk_size) {
+#ifdef PRINT_DEBUG_MESSAGES
+    	    char processor_name[MPI_MAX_PROCESSOR_NAME];
+    	    int name_len;
+    	    MPI_Get_processor_name(processor_name, &name_len);
+	    printf("%s Setting partition offset [%d] to %lu (after alignment: %lu) (expected_chunk_size: %lu, got_edges: %lu)\n",
+			    processor_name, i + 1, v_i, v_i / PAGESIZE * PAGESIZE, expected_chunk_size, got_edges);
+#endif
             partition_offset[i+1] = v_i;
             break;
           }
@@ -872,10 +885,19 @@ public:
       }
     }
     assert(partition_offset[partitions]==vertices);
+    MPI_Allreduce(MPI_IN_PLACE, partition_offset, partitions + 1, vid_t, MPI_MAX, MPI_COMM_WORLD);
     owned_vertices = partition_offset[partition_id+1] - partition_offset[partition_id];
     // check consistency of partition boundaries
+#if 0
     VertexId * global_partition_offset = new VertexId [partitions + 1];
     MPI_Allreduce(partition_offset, global_partition_offset, partitions + 1, vid_t, MPI_MAX, MPI_COMM_WORLD);
+#ifdef PRINT_DEBUG_MESSAGES
+    for (int i=0;i<=partitions;i++) {
+	    printf("%s Partition [%d] = %lu | Global [%d] = %lu\n",
+			    processor_name, i, partition_offset[i], i,
+			    global_partition_offset[i]);
+    }
+#endif
     for (int i=0;i<=partitions;i++) {
       assert(partition_offset[i] == global_partition_offset[i]);
     }
@@ -883,6 +905,7 @@ public:
     for (int i=0;i<=partitions;i++) {
       assert(partition_offset[i] == global_partition_offset[i]);
     }
+#endif
     #ifdef PRINT_DEBUG_MESSAGES
     if (partition_id==0) {
       for (int i=0;i<partitions;i++) {
@@ -894,7 +917,7 @@ public:
       }
     }
     #endif
-    delete [] global_partition_offset;
+    //delete [] global_partition_offset;
     {
       // NUMA-aware sub-chunking
       local_partition_offset = new VertexId [sockets + 1];
