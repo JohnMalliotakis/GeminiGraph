@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include <inttypes.h>
 #include <assert.h>
+#include <limits.h>
 
 struct thread_info {
 	unsigned ID;
@@ -23,6 +24,7 @@ struct thread_info {
 	char weighted;
 	char one_indexed;
 	char *input_file;
+	unsigned long max_vID;
 };
 
 char *copy_string(char *input)
@@ -107,7 +109,7 @@ void *edge_parsing_thread(void *arg)
 		else
 			sscanf(line_read, "%lu%lu", &src, &dst);
 
-		if(info->one_indexed){
+		if(info->one_indexed == 1){
 			/* Gemini is 0-based, adjust */
 			if(!src || !dst)
 				printf("WARNING: 1-indexed flag but <%lu, %lu> found on line %lu!\n",
@@ -115,6 +117,14 @@ void *edge_parsing_thread(void *arg)
 			src--;
 			dst--;
 		}
+		if(src == ULONG_MAX || dst == ULONG_MAX)
+			printf("WARNING: weird edge <%lu, %lu>, line %lu\n",
+					src, dst, info->initial_offset + j + 1);
+		/* Adjust max vertex ID */
+		if(src > info->max_vID)
+			info->max_vID = src;
+		if(dst > info->max_vID)
+			info->max_vID = dst;
 
 		memcpy(iter, &src, sizeof(unsigned long));
 		iter += sizeof(unsigned long);
@@ -138,7 +148,7 @@ int main(int argc, char *argv[])
 {
 	int ret = 0, i, opt, output_fd = -1;
 	unsigned threads = 32;
-	unsigned long edges = 1000, edges_per_thread;
+	unsigned long edges = 1000, edges_per_thread, max_vID = 0UL;
 	char *input_path = NULL, *output_path = NULL, *strend;
 	char weighted_graph = 0;
 	char one_indexed = 0;
@@ -269,6 +279,7 @@ int main(int argc, char *argv[])
 		info_arr[i].one_indexed = one_indexed;
 		info_arr[i].input_file = input_path;
 		info_arr[i].output_buf = (char *)map + (i * edges_per_thread * size_per_edge);
+		info_arr[i].max_vID = 0UL;
 		if(pthread_create(&thread_arr[i], NULL, edge_parsing_thread,
 					(void *)&info_arr[i]) != 0){
 			int j;
@@ -294,6 +305,12 @@ int main(int argc, char *argv[])
 		close(output_fd);
 		goto out;
 	}
+
+	/* Reduce max vertex IDs from threads */
+	for(i = 0; i < threads; i++)
+		if(info_arr[i].max_vID > max_vID)
+			max_vID = info_arr[i].max_vID;
+	printf("Maximum Vertex ID: %lu\n",max_vID);
 
 	close(output_fd);
 out:
