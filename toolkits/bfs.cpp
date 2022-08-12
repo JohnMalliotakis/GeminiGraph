@@ -16,6 +16,7 @@ Copyright (c) 2014-2015 Xiaowei Zhu, Tsinghua University
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <random>
 
 #include "core/graph.hpp"
 
@@ -112,18 +113,22 @@ int main(int argc, char ** argv) {
   MPI_Instance mpi(&argc, &argv);
   char *end;
 
-  if (argc<4) {
-    printf("bfs [file] [vertices] [root]\n");
+  if (argc<3) {
+    printf("bfs [file] [vertices]\n");
     exit(-1);
   }
 
   Graph<Empty> * graph;
   graph = new Graph<Empty>();
-  //VertexId root = std::atoi(argv[3]);
-  VertexId root = std::strtoul(argv[3], &end, 10);
-  end = NULL;
-  //graph->load_directed(argv[1], std::atoi(argv[2]));
-  graph->load_directed(argv[1], std::strtoul(argv[2], &end, 10));
+
+  VertexId vertices = std::strtoul(argv[2], &end, 10);
+  graph->load_directed(argv[1], vertices);
+
+  // Setup random number generation for SSSP source
+  std::random_device rdev;
+  std::mt19937 gen(rdev()); // Seed for random generation
+  std::uniform_int_distribution<unsigned long> udist(0, vertices - 1);
+  VertexId root = udist(gen);
 
   compute(graph, root);
   for (int run=0;run<5;run++) {
