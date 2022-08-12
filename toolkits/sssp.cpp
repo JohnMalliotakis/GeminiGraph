@@ -126,6 +126,12 @@ int main(int argc, char ** argv) {
   std::uniform_int_distribution<unsigned long> udist(0, vertices - 1);
   VertexId root = udist(gen);
 
+  // All MPI hosts must have the same source
+  // Just choose the largest random number selected
+  // across all machines
+  MPI_Allreduce(MPI_IN_PLACE, &root, 1, MPI_UNSIGNED_LONG, MPI_MAX, MPI_COMM_WORLD);
+  printf("Using source vertex %lu\n", root);
+
   compute(graph, root);
   for (int run=0;run<5;run++) {
     compute(graph, root);
