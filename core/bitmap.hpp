@@ -17,6 +17,9 @@ Copyright (c) 2015-2016 Xiaowei Zhu, Tsinghua University
 #ifndef BITMAP_HPP
 #define BITMAP_HPP
 
+#include <malloc.h>
+#include <stdlib.h>
+
 #define WORD_OFFSET(i) ((i) >> 6)
 #define BIT_OFFSET(i) ((i) & 0x3f)
 
@@ -26,11 +29,15 @@ public:
   unsigned long * data;
   Bitmap() : size(0), data(NULL) { }
   Bitmap(size_t size) : size(size) {
-    data = new unsigned long [WORD_OFFSET(size)+1];
+    // jmal: use malloc here, bitmap scales with input graph vertices
+    //data = new unsigned long [WORD_OFFSET(size)+1];
+    data = (unsigned long *)malloc((WORD_OFFSET(size) + 1) * sizeof(unsigned long));
+    assert(data != NULL);
     clear();
   }
   ~Bitmap() {
-    delete [] data;
+    //delete [] data;
+    free(data);
   }
   void clear() {
     size_t bm_size = WORD_OFFSET(size);

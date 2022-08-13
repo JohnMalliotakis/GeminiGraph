@@ -70,11 +70,15 @@ struct MessageBuffer {
   void init (int socket_id) {
     capacity = 4096;
     count = 0;
-    data = (char*)numa_alloc_onnode(capacity, socket_id);
+    // jmal: msg buffer size scales with graph edges
+    //data = (char*)numa_alloc_onnode(capacity, socket_id);
+    data = (char *)malloc(capacity);
+    assert(data != NULL);
   }
   void resize(size_t new_capacity) {
     if (new_capacity > capacity) {
-      char * new_data = (char*)numa_realloc(data, capacity, new_capacity);
+      //char * new_data = (char*)numa_realloc(data, capacity, new_capacity);
+      char *new_data = (char *)realloc(data, new_capacity);
       assert(new_data!=NULL);
       data = new_data;
       capacity = new_capacity;
@@ -197,6 +201,7 @@ public:
 
     omp_set_dynamic(0);
     omp_set_num_threads(threads);
+    // jmal: Small metadata structure allocations, keep them as is
     thread_state = new ThreadState * [threads];
     local_send_buffer_limit = 16;
     local_send_buffer = new MessageBuffer * [threads];
@@ -250,7 +255,11 @@ public:
   // allocate a numa-aware vertex array
   template<typename T>
   T * alloc_vertex_array() {
-    char * array = (char *)mmap(NULL, sizeof(T) * vertices, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    // jmal: Replace with malloc to use extended heap
+    // numa_tonode_memory results in mbind calls, mmap/fastmap should be able
+    // to check set policy
+    //char * array = (char *)mmap(NULL, sizeof(T) * vertices, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    char *array = (char *)malloc(sizeof(T) * vertices);
     assert(array!=NULL);
     for (int s_i=0;s_i<sockets;s_i++) {
       numa_tonode_memory(array + sizeof(T) * local_partition_offset[s_i], sizeof(T) * (local_partition_offset[s_i+1] - local_partition_offset[s_i]), s_i);
@@ -261,17 +270,25 @@ public:
   // deallocate a vertex array
   template<typename T>
   T * dealloc_vertex_array(T * array) {
-    numa_free(array, sizeof(T) * vertices);
+    //numa_free(array, sizeof(T) * vertices);
+    free(array);
   }
 
   // allocate a numa-oblivious vertex array
   template<typename T>
   T * alloc_interleaved_vertex_array() {
-    T * array = (T *)numa_alloc_interleaved( sizeof(T) * vertices );
+    // jmal: replace with malloc + mbind call setting policy to MPOL_INTERLEAVE
+    //T * array = (T *)numa_alloc_interleaved( sizeof(T) * vertices );
+    T * array = (T *)malloc(sizeof(T) * vertices);
     assert(array!=NULL);
+    if(mbind(array, sizeof(T) * vertices, MPOL_INTERLEAVE, numa_all_nodes_ptr, sockets, 0) == -1){
+	    perror("mbind");
+	    assert(false);
+    }
     return array;
   }
 
+  // jmal: dump/restore vertex array not called anywhere so leave them as is (for now)
   // dump a vertex array to path
   template<typename T>
   void dump_vertex_array(T * array, std::string path) {
@@ -346,6 +363,7 @@ public:
   }
 
   // allocate a vertex subset
+  // jmal: uses bitmap, already taken care of
   VertexSubset * alloc_vertex_subset() {
     return new VertexSubset(vertices);
   }
@@ -396,14 +414,18 @@ public:
     }
     long bytes_to_read = edge_unit_size * read_edges;
     long read_offset = edge_unit_size * (edges / partitions * partition_id);
-    long read_bytes;
+    //long read_bytes;
     int fin = open(path.c_str(), O_RDONLY);
-    EdgeUnit<EdgeData> * read_edge_buffer = new EdgeUnit<EdgeData> [CHUNKSIZE];
+    //EdgeUnit<EdgeData> * read_edge_buffer = new EdgeUnit<EdgeData> [CHUNKSIZE];
 
     out_degree = alloc_interleaved_vertex_array<VertexId>();
     for (VertexId v_i=0;v_i<vertices;v_i++) {
       out_degree[v_i] = 0;
     }
+    // jmal: change this to mmap
+    // FastMap would still work with buffered reads
+    // XXX: input graph file must be in FastMap wrapfs
+#if 0
     assert(lseek(fin, read_offset, SEEK_SET)==read_offset);
     read_bytes = 0;
     while (read_bytes < bytes_to_read) {
@@ -424,6 +446,21 @@ public:
         __sync_fetch_and_add(&out_degree[dst], 1);
       }
     }
+#endif
+    void *map = mmap(NULL, bytes_to_read, PROT_READ, MAP_SHARED, fin, read_offset);
+    assert(map != MAP_FAILED);
+    // jmal: use HUGEPAGES for sequential reading of >2MB
+    if(bytes_to_read >= (1 << 21))
+	    madvise(map, bytes_to_read, MADV_HUGEPAGE);
+    #pragma omp parallel for
+    for(EdgeId iter=0; iter < read_edges; iter++) {
+	    EdgeUnit<EdgeData> edge = ((EdgeUnit<EdgeData> *)map)[iter];
+	    VertexId src = edge.src;
+	    VertexId dst = edge.dst;
+	    __sync_fetch_and_add(&out_degree[src], 1);
+	    __sync_fetch_and_add(&out_degree[dst], 1);
+    }
+
     MPI_Allreduce(MPI_IN_PLACE, out_degree, vertices, vid_t, MPI_SUM, MPI_COMM_WORLD);
 
     // locality-aware chunking
@@ -519,7 +556,9 @@ public:
     for (VertexId v_i=partition_offset[partition_id];v_i<partition_offset[partition_id+1];v_i++) {
       filtered_out_degree[v_i] = out_degree[v_i];
     }
-    numa_free(out_degree, sizeof(VertexId) * vertices);
+    // jmal: numa_free replaced by free
+    //numa_free(out_degree, sizeof(VertexId) * vertices);
+    free(out_degree);
     out_degree = filtered_out_degree;
     in_degree = out_degree;
 
@@ -539,7 +578,14 @@ public:
     for (int s_i=0;s_i<sockets;s_i++) {
       outgoing_adj_bitmap[s_i] = new Bitmap (vertices);
       outgoing_adj_bitmap[s_i]->clear();
-      outgoing_adj_index[s_i] = (EdgeId*)numa_alloc_onnode(sizeof(EdgeId) * (vertices+1), s_i);
+      // jmal: scales with graph size, replace with malloc
+      //outgoing_adj_index[s_i] = (EdgeId*)numa_alloc_onnode(sizeof(EdgeId) * (vertices+1), s_i);
+      struct bitmask *mask = numa_allocate_nodemask();
+      numa_bitmask_setbit(mask, (unsigned)s_i);
+      outgoing_adj_index[s_i] = (EdgeId *)malloc(sizeof(EdgeId) * (vertices + 1));
+      assert(mbind((void *)outgoing_adj_index[s_i], sizeof(EdgeId) * (vertices + 1),
+		      MPOL_BIND, mask, sockets, 0) != -1);
+      numa_bitmask_free(mask);
     }
     {
       std::thread recv_thread_dst([&](){
@@ -578,6 +624,8 @@ public:
       for (int i=0;i<partitions;i++) {
         buffered_edges[i] = 0;
       }
+
+#if 0
       assert(lseek(fin, read_offset, SEEK_SET)==read_offset);
       read_bytes = 0;
       while (read_bytes < bytes_to_read) {
@@ -617,6 +665,34 @@ public:
           }
         }
       }
+#endif
+        for(EdgeId e_i=0; e_i < read_edges; e_i++){
+              EdgeUnit<EdgeData> edge = ((EdgeUnit<EdgeData> *)map)[e_i];
+              VertexId dst = edge.dst;
+              int i = get_partition_id(dst);
+              memcpy(send_buffer[i].data() + edge_unit_size * buffered_edges[i], &edge, edge_unit_size);
+              buffered_edges[i] += 1;
+              if(buffered_edges[i] == CHUNKSIZE) {
+          	    MPI_Send(send_buffer[i].data(), edge_unit_size * buffered_edges[i], MPI_CHAR, i, ShuffleGraph, MPI_COMM_WORLD);
+          	    buffered_edges[i] = 0;
+              }
+        }
+        for(EdgeId e_i=0; e_i < read_edges; e_i++){
+		// Send symmetric added edges in chunks
+		EdgeUnit<EdgeData> edge = ((EdgeUnit<EdgeData> *)map)[e_i];
+		VertexId tmp = edge.src;
+		edge.src = edge.dst;
+		edge.dst = tmp;
+
+		int i = get_partition_id(edge.dst);
+		memcpy(send_buffer[i].data() + edge_unit_size * buffered_edges[i], &edge, edge_unit_size);
+		buffered_edges[i] += 1;
+		if(buffered_edges[i] == CHUNKSIZE) {
+			MPI_Send(send_buffer[i].data(), edge_unit_size * buffered_edges[i], MPI_CHAR, i, ShuffleGraph, MPI_COMM_WORLD);
+			buffered_edges[i] = 0;
+		}
+        }
+      }
       for (int i=0;i<partitions;i++) {
         if (buffered_edges[i]==0) continue;
         MPI_Send(send_buffer[i].data(), edge_unit_size * buffered_edges[i], MPI_CHAR, i, ShuffleGraph, MPI_COMM_WORLD);
@@ -642,7 +718,13 @@ public:
           compressed_outgoing_adj_vertices[s_i] += 1;
         }
       }
-      compressed_outgoing_adj_index[s_i] = (CompressedAdjIndexUnit*)numa_alloc_onnode( sizeof(CompressedAdjIndexUnit) * (compressed_outgoing_adj_vertices[s_i] + 1) , s_i );
+      //compressed_outgoing_adj_index[s_i] = (CompressedAdjIndexUnit*)numa_alloc_onnode( sizeof(CompressedAdjIndexUnit) * (compressed_outgoing_adj_vertices[s_i] + 1) , s_i );
+      struct bitmask *mask = numa_allocate_nodemask();
+      numa_bitmask_setbit(mask, (unsigned)s_i);
+      compressed_outgoing_adj_index[s_i] = (CompressedAdjIndexUnit *)malloc(sizeof(CompressedAdjIndexUnit) * (compressed_outgoing_adj_vertices[s_i] + 1));
+      assert(compressed_outgoing_adj_index[s_i] != NULL);
+      assert(mbind((void *)compressed_outgoing_adj_index[s_i], sizeof(CompressedAdjIndexUnit) * (compressed_outgoing_adj_vertices[s_i] + 1), MPOL_BIND, mask, sockets, 0) != -1);
+
       compressed_outgoing_adj_index[s_i][0].index = 0;
       EdgeId last_e_i = 0;
       compressed_outgoing_adj_vertices[s_i] = 0;
@@ -663,7 +745,11 @@ public:
       #ifdef PRINT_DEBUG_MESSAGES
       printf("part(%d) E_%d has %lu symmetric edges\n", partition_id, s_i, outgoing_edges[s_i]);
       #endif
-      outgoing_adj_list[s_i] = (AdjUnit<EdgeData>*)numa_alloc_onnode(unit_size * outgoing_edges[s_i], s_i);
+      //outgoing_adj_list[s_i] = (AdjUnit<EdgeData>*)numa_alloc_onnode(unit_size * outgoing_edges[s_i], s_i);
+      outgoing_adj_list[s_i] = (AdjUnit<EdgeData> *)malloc(unit_size * outgoing_edges[s_i]);
+      assert(outgoing_adj_list[s_i] != NULL);
+      assert(mbind((void *)outgoing_adj_list[s_i], unit_size * outgoing_edges[s_i], MPOL_BIND, mask, sockets, 0) != -1);
+      numa_bitmask_free(mask);
     }
     {
       std::thread recv_thread_dst([&](){
@@ -701,6 +787,7 @@ public:
       for (int i=0;i<partitions;i++) {
         buffered_edges[i] = 0;
       }
+#if 0
       assert(lseek(fin, read_offset, SEEK_SET)==read_offset);
       read_bytes = 0;
       while (read_bytes < bytes_to_read) {
@@ -740,6 +827,33 @@ public:
           }
         }
       }
+#endif
+      for(EdgeId e_i=0; e_i < read_edges; e_i++){
+              EdgeUnit<EdgeData> edge = ((EdgeUnit<EdgeData> *)map)[e_i];
+	      VertexId dst = edge.dst;
+	      int i = get_partition_id(dst);
+	      memcpy(send_buffer[i].data() + edge_unit_size * buffered_edges[i], &edge, edge_unit_size);
+	      buffered_edges[i] += 1;
+	      if(buffered_edges[i] == CHUNKSIZE) {
+		      MPI_Send(send_buffer[i].data(), edge_unit_size * buffered_edges[i], MPI_CHAR, i, ShuffleGraph, MPI_COMM_WORLD);
+		      buffered_edges[i] = 0;
+	      }
+      }
+      for(EdgeId e_i=0; e_i < read_edges; e_i++){
+              EdgeUnit<EdgeData> edge = ((EdgeUnit<EdgeData> *)map)[e_i];
+	      // jmal: swap edge src and dst to send symmetric edge
+	      VertexId tmp = edge.src;
+	      edge.src = edge.dst;
+	      edge.dst = tmp;
+
+	      int i = get_partition_id(edge.dst);
+	      memcpy(send_buffer[i].data() + edge_unit_size * buffered_edges[i], &edge, edge_unit_size);
+	      buffered_edges[i] += 1;
+	      if(buffered_edges[i] == CHUNKSIZE) {
+		      MPI_Send(send_buffer[i].data(), edge_unit_size * buffered_edges[i], MPI_CHAR, i, ShuffleGraph, MPI_COMM_WORLD);
+		      buffered_edges[i] = 0;
+	      }
+      }
       for (int i=0;i<partitions;i++) {
         if (buffered_edges[i]==0) continue;
         MPI_Send(send_buffer[i].data(), edge_unit_size * buffered_edges[i], MPI_CHAR, i, ShuffleGraph, MPI_COMM_WORLD);
@@ -770,7 +884,8 @@ public:
 
     delete [] buffered_edges;
     delete [] send_buffer;
-    delete [] read_edge_buffer;
+    //delete [] read_edge_buffer;
+    munmap(map, bytes_to_read);
     delete [] recv_buffer;
     close(fin);
 
@@ -823,14 +938,16 @@ public:
     }
     long bytes_to_read = edge_unit_size * read_edges;
     long read_offset = edge_unit_size * (edges / partitions * partition_id);
-    long read_bytes;
+    //long read_bytes;
     int fin = open(path.c_str(), O_RDONLY);
-    EdgeUnit<EdgeData> * read_edge_buffer = new EdgeUnit<EdgeData> [CHUNKSIZE];
+
+    //EdgeUnit<EdgeData> * read_edge_buffer = new EdgeUnit<EdgeData> [CHUNKSIZE];
 
     out_degree = alloc_interleaved_vertex_array<VertexId>();
     for (VertexId v_i=0;v_i<vertices;v_i++) {
       out_degree[v_i] = 0;
     }
+#if 0
     assert(lseek(fin, read_offset, SEEK_SET)==read_offset);
     read_bytes = 0;
     while (read_bytes < bytes_to_read) {
@@ -850,6 +967,16 @@ public:
         VertexId dst = read_edge_buffer[e_i].dst;
 	__sync_fetch_and_add(&out_degree[src], 1);
       }
+    }
+#endif
+    void *map = mmap(NULL, bytes_to_read, PROT_READ, MAP_SHARED, fin, read_offset);
+    assert(map != MAP_FAILED);
+    #pragma omp parallel for
+    for(EdgeId e_i = 0; e_i < read_edges; e_i++){
+	    EdgeUnit<EdgeData> edge = ((EdgeUnit<EdgeData> *)map)[e_i];
+	    VertexId src = edge.src;
+	    VertexId dst = edge.dst;
+	    __sync_fetch_and_add(&out_degree[src], 1);
     }
     MPI_Allreduce(MPI_IN_PLACE, out_degree, vertices, vid_t, MPI_SUM, MPI_COMM_WORLD);
 
@@ -958,7 +1085,8 @@ public:
     for (VertexId v_i=partition_offset[partition_id];v_i<partition_offset[partition_id+1];v_i++) {
       filtered_out_degree[v_i] = out_degree[v_i];
     }
-    numa_free(out_degree, sizeof(VertexId) * vertices);
+    //numa_free(out_degree, sizeof(VertexId) * vertices);
+    free(out_degree);
     out_degree = filtered_out_degree;
     in_degree = alloc_vertex_array<VertexId>();
     for (VertexId v_i=partition_offset[partition_id];v_i<partition_offset[partition_id+1];v_i++) {
@@ -980,7 +1108,13 @@ public:
     for (int s_i=0;s_i<sockets;s_i++) {
       outgoing_adj_bitmap[s_i] = new Bitmap (vertices);
       outgoing_adj_bitmap[s_i]->clear();
-      outgoing_adj_index[s_i] = (EdgeId*)numa_alloc_onnode(sizeof(EdgeId) * (vertices+1), s_i);
+      //outgoing_adj_index[s_i] = (EdgeId*)numa_alloc_onnode(sizeof(EdgeId) * (vertices+1), s_i);
+      struct bitmask *mask = numa_allocate_nodemask();
+      numa_bitmask_setbit(mask, (unsigned)s_i);
+      outgoing_adj_index[s_i] = (EdgeId *)malloc(sizeof(EdgeId) * (vertices + 1));
+      assert(mbind((void *)outgoing_adj_index[s_i], sizeof(EdgeId) * (vertices + 1),
+		      MPOL_BIND, mask, sockets, 0) != -1);
+      numa_bitmask_free(mask);
     }
     {
       std::thread recv_thread_dst([&](){
@@ -1020,6 +1154,7 @@ public:
       for (int i=0;i<partitions;i++) {
         buffered_edges[i] = 0;
       }
+#if 0
       assert(lseek(fin, read_offset, SEEK_SET)==read_offset);
       read_bytes = 0;
       while (read_bytes < bytes_to_read) {
@@ -1042,6 +1177,18 @@ public:
             buffered_edges[i] = 0;
           }
         }
+      }
+#endif
+      for(EdgeId e_i = 0; e_i < read_edges; e_i++){
+              EdgeUnit<EdgeData> edge = ((EdgeUnit<EdgeData> *)map)[e_i];
+              VertexId dst = edge.dst;
+              int i = get_partition_id(dst);
+              memcpy(send_buffer[i].data() + edge_unit_size * buffered_edges[i], MPI_CHAR, i, ShuffleGraph, MPI_COMM_WORLD);
+              buffered_edges[i] += 1;
+              if(buffered_edges[i] == CHUNKSIZE) {
+          	    MPI_Send(send_buffer[i].data(), edge_unit_size * buffered_edges[i], MPI_CHAR, i, ShuffleGraph, MPI_COMM_WORLD);
+          	    buffered_edges[i] = 0;
+              }
       }
       for (int i=0;i<partitions;i++) {
         if (buffered_edges[i]==0) continue;
@@ -1068,7 +1215,13 @@ public:
           compressed_outgoing_adj_vertices[s_i] += 1;
         }
       }
-      compressed_outgoing_adj_index[s_i] = (CompressedAdjIndexUnit*)numa_alloc_onnode( sizeof(CompressedAdjIndexUnit) * (compressed_outgoing_adj_vertices[s_i] + 1) , s_i );
+      //compressed_outgoing_adj_index[s_i] = (CompressedAdjIndexUnit*)numa_alloc_onnode( sizeof(CompressedAdjIndexUnit) * (compressed_outgoing_adj_vertices[s_i] + 1) , s_i );
+      struct bitmask *mask = numa_allocate_nodemask();
+      numa_bitmask_setbit(mask, (unsigned)s_i);
+      compressed_outgoing_adj_index[s_i] = (CompressedAdjIndexUnit *)malloc(sizeof(CompressedAdjIndexUnit) * (compressed_outgoing_adj_vertices[s_i] + 1));
+      assert(compressed_outgoing_adj_index[s_i] != NULL);
+      assert(mbind((void *)compressed_outgoing_adj_index[s_i], sizeof(CompressedAdjIndexUnit) * (compressed_outgoing_adj_vertices[s_i] + 1), MPOL_BIND, mask, sockets, 0) != -1);
+
       compressed_outgoing_adj_index[s_i][0].index = 0;
       EdgeId last_e_i = 0;
       compressed_outgoing_adj_vertices[s_i] = 0;
@@ -1089,7 +1242,11 @@ public:
       #ifdef PRINT_DEBUG_MESSAGES
       printf("part(%d) E_%d has %lu sparse mode edges\n", partition_id, s_i, outgoing_edges[s_i]);
       #endif
-      outgoing_adj_list[s_i] = (AdjUnit<EdgeData>*)numa_alloc_onnode(unit_size * outgoing_edges[s_i], s_i);
+      //outgoing_adj_list[s_i] = (AdjUnit<EdgeData>*)numa_alloc_onnode(unit_size * outgoing_edges[s_i], s_i);
+      outgoing_adj_list[s_i] = (AdjUnit<EdgeData> *)malloc(unit_size * outgoing_edges[s_i]);
+      assert(outgoing_adj_list[s_i] != NULL);
+      assert(mbind((void *)outgoing_adj_list[s_i], unit_size * outgoing_edges[s_i], MPOL_BIND, mask, sockets, 0) != -1);
+      numa_bitmask_free(mask);
     }
     {
       std::thread recv_thread_dst([&](){
@@ -1127,6 +1284,7 @@ public:
       for (int i=0;i<partitions;i++) {
         buffered_edges[i] = 0;
       }
+#if 0
       assert(lseek(fin, read_offset, SEEK_SET)==read_offset);
       read_bytes = 0;
       while (read_bytes < bytes_to_read) {
@@ -1150,6 +1308,19 @@ public:
           }
         }
       }
+#endif
+      for(EdgeId e_i = 0; e_i < read_edges; e_i++){
+              EdgeUnit<EdgeData> edge = ((EdgeUnit<EdgeData> *)map)[e_i];
+	      VertexId dst = edge.dst;
+	      int i = get_partition_id(dst);
+	      memcpy(send_buffer[i].data() + edge_unit_size * buffered_edges[i], &edge, edge_unit_size);
+	      buffered_edges[i] += 1;
+	      if(buffered_edges[i] == CHUNKSIZE) {
+		      MPI_Send(send_buffer[i].data(), edge_unit_size * buffered_edges[i], MPI_CHAR, i, ShuffleGraph, MPI_COMM_WORLD);
+		      buffered_edges[i] = 0;
+	      }
+      }
+
       for (int i=0;i<partitions;i++) {
         if (buffered_edges[i]==0) continue;
         MPI_Send(send_buffer[i].data(), edge_unit_size * buffered_edges[i], MPI_CHAR, i, ShuffleGraph, MPI_COMM_WORLD);
@@ -1178,7 +1349,14 @@ public:
     for (int s_i=0;s_i<sockets;s_i++) {
       incoming_adj_bitmap[s_i] = new Bitmap (vertices);
       incoming_adj_bitmap[s_i]->clear();
-      incoming_adj_index[s_i] = (EdgeId*)numa_alloc_onnode(sizeof(EdgeId) * (vertices+1), s_i);
+      struct bitmask *mask;
+      mask = numa_allocate_nodemask();
+      numa_bitmask_setbit(mask, (unsigned)s_i);
+      //incoming_adj_index[s_i] = (EdgeId*)numa_alloc_onnode(sizeof(EdgeId) * (vertices+1), s_i);
+      incoming_adj_index[s_i] = (EdgeId *)malloc(sizeof(EdgeId) * (vertices + 1));
+      assert(incoming_adj_index[s_i] != NULL);
+      assert(mbind((void *)incoming_adj_index[s_i], sizeof(EdgeId) * (vertices + 1), MPOL_BIND, mask, sockets, 0) != -1);
+      numa_bitmask_free(mask);
     }
     {
       std::thread recv_thread_src([&](){
@@ -1217,6 +1395,7 @@ public:
       for (int i=0;i<partitions;i++) {
         buffered_edges[i] = 0;
       }
+#if 0
       assert(lseek(fin, read_offset, SEEK_SET)==read_offset);
       read_bytes = 0;
       while (read_bytes < bytes_to_read) {
@@ -1239,6 +1418,18 @@ public:
             buffered_edges[i] = 0;
           }
         }
+      }
+#endif
+      for(EdgeId e_i = 0; e_i < read_edges; e_i++){
+              EdgeUnit<EdgeData> edge = ((EdgeUnit<EdgeData> *)map)[e_i];
+	      VertexId src = edge.src;
+	      int i = get_partition_id(src);
+	      memcpy(send_buffer[i].data() + edge_unit_size * buffered_edges[i], &edge, edge_unit_size);
+	      buffered_edges[i] += 1;
+	      if(buffered_edges[i] == CHUNKSIZE) {
+		      MPI_Send(send_buffer[i].data(), edge_unit_size * buffered_edges[i], MPI_CHAR, i, ShuffleGraph, MPI_COMM_WORLD);
+		      buffered_edges[i] = 0;
+	      }
       }
       for (int i=0;i<partitions;i++) {
         if (buffered_edges[i]==0) continue;
@@ -1265,7 +1456,14 @@ public:
           compressed_incoming_adj_vertices[s_i] += 1;
         }
       }
-      compressed_incoming_adj_index[s_i] = (CompressedAdjIndexUnit*)numa_alloc_onnode( sizeof(CompressedAdjIndexUnit) * (compressed_incoming_adj_vertices[s_i] + 1) , s_i );
+      struct bitmask *mask = numa_allocate_nodemask();
+      numa_bitmask_setbit(mask, (unsigned)s_i);
+      //compressed_incoming_adj_index[s_i] = (CompressedAdjIndexUnit*)numa_alloc_onnode( sizeof(CompressedAdjIndexUnit) * (compressed_incoming_adj_vertices[s_i] + 1) , s_i );
+      compressed_incoming_adj_index[s_i] = (CompressedAdjIndexUnit *)malloc(sizeof(CompressedAdjIndexUnit) * (compressed_incoming_adj_vertices[s_i] + 1));
+      assert(compressed_incoming_adj_index[s_i] != NULL);
+      assert(mbind((void *)compressed_incoming_adj_index[s_i], sizeof(CompressedAdjIndexUnit) * (compressed_incoming_adj_vertices[s_i] + 1), MPOL_BIND,
+			      mask, sockets, 0) != -1);
+
       compressed_incoming_adj_index[s_i][0].index = 0;
       EdgeId last_e_i = 0;
       compressed_incoming_adj_vertices[s_i] = 0;
@@ -1286,7 +1484,11 @@ public:
       #ifdef PRINT_DEBUG_MESSAGES
       printf("part(%d) E_%d has %lu dense mode edges\n", partition_id, s_i, incoming_edges[s_i]);
       #endif
-      incoming_adj_list[s_i] = (AdjUnit<EdgeData>*)numa_alloc_onnode(unit_size * incoming_edges[s_i], s_i);
+      //incoming_adj_list[s_i] = (AdjUnit<EdgeData>*)numa_alloc_onnode(unit_size * incoming_edges[s_i], s_i);
+      incoming_adj_list[s_i] = (AdjUnit<EdgeData> *)malloc(unit_size * incoming_edges[s_i]);
+      assert(incoming_adj_list[s_i] != NULL);
+      assert(mbind((void *)incoming_adj_list[s_i], unit_size * incoming_edges[s_i], MPOL_BIND, mask, sockets, 0) != -1);
+      numa_bitmask_free(mask);
     }
     {
       std::thread recv_thread_src([&](){
@@ -1324,6 +1526,7 @@ public:
       for (int i=0;i<partitions;i++) {
         buffered_edges[i] = 0;
       }
+#if 0
       assert(lseek(fin, read_offset, SEEK_SET)==read_offset);
       read_bytes = 0;
       while (read_bytes < bytes_to_read) {
@@ -1347,6 +1550,18 @@ public:
           }
         }
       }
+#endif
+      for(EdgeId e_i=0; e_i < read_edges; e_i++){
+	      EdgeUnit<EdgeData> edge = ((EdgeUnit<EdgeData> *)map)[e_i];
+	      VertexId src = edge.src;
+	      int i = get_partition_id(src);
+	      memcpy(send_buffer[i].data() + edge_unit_size * buffered_edges[i], &edge, edge_unit_size);
+	      buffered_edges[i] += 1;
+	      if(buffered_edges[i] == CHUNKSIZE) {
+		      MPI_Send(send_buffer[i].data(), edge_unit_size * buffered_edges[i], MPI_CHAR, i, ShuffleGraph, MPI_COMM_WORLD);
+		      buffered_edges[i] = 0;
+	      }
+      }
       for (int i=0;i<partitions;i++) {
         if (buffered_edges[i]==0) continue;
         MPI_Send(send_buffer[i].data(), edge_unit_size * buffered_edges[i], MPI_CHAR, i, ShuffleGraph, MPI_COMM_WORLD);
@@ -1369,7 +1584,8 @@ public:
 
     delete [] buffered_edges;
     delete [] send_buffer;
-    delete [] read_edge_buffer;
+    //delete [] read_edge_buffer;
+    munmap(map, bytes_to_read);
     delete [] recv_buffer;
     close(fin);
 
