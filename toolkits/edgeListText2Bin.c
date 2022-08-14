@@ -289,7 +289,7 @@ int main(int argc, char *argv[])
 		goto out;
 	}
 
-	size_per_edge = weighted_graph ? (2 * sizeof(unsigned long) + sizeof(float)) : (2 * sizeof(unsigned long));
+	size_per_edge = (weighted_graph || generate_weights) ? (2 * sizeof(unsigned long) + sizeof(float)) : (2 * sizeof(unsigned long));
 	output_file_size = edges * size_per_edge;
 
 	printf("|E| = %lu, bytes per edge: %lu (0x%lx), output file size: %lu bytes\n",
