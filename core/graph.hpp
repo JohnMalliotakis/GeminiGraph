@@ -25,6 +25,7 @@ Copyright (c) 2015-2016 Xiaowei Zhu, Tsinghua University
 #include <malloc.h>
 #include <sys/mman.h>
 #include <numa.h>
+#include <numaif.h>
 #include <omp.h>
 
 #include <string>
@@ -281,7 +282,7 @@ public:
     //T * array = (T *)numa_alloc_interleaved( sizeof(T) * vertices );
     T * array = (T *)malloc(sizeof(T) * vertices);
     assert(array!=NULL);
-    if(mbind(array, sizeof(T) * vertices, MPOL_INTERLEAVE, numa_all_nodes_ptr, sockets, 0) == -1){
+    if(mbind(array, sizeof(T) * vertices, MPOL_INTERLEAVE, numa_all_nodes_ptr->maskp, sockets, 0) == -1){
 	    perror("mbind");
 	    assert(false);
     }
@@ -584,7 +585,7 @@ public:
       numa_bitmask_setbit(mask, (unsigned)s_i);
       outgoing_adj_index[s_i] = (EdgeId *)malloc(sizeof(EdgeId) * (vertices + 1));
       assert(mbind((void *)outgoing_adj_index[s_i], sizeof(EdgeId) * (vertices + 1),
-		      MPOL_BIND, mask, sockets, 0) != -1);
+		      MPOL_BIND, mask->maskp, sockets, 0) != -1);
       numa_bitmask_free(mask);
     }
     {
@@ -692,20 +693,19 @@ public:
 			buffered_edges[i] = 0;
 		}
         }
-      }
-      for (int i=0;i<partitions;i++) {
-        if (buffered_edges[i]==0) continue;
-        MPI_Send(send_buffer[i].data(), edge_unit_size * buffered_edges[i], MPI_CHAR, i, ShuffleGraph, MPI_COMM_WORLD);
-        buffered_edges[i] = 0;
-      }
-      for (int i=0;i<partitions;i++) {
-        char c = 0;
-        MPI_Send(&c, 1, MPI_CHAR, i, ShuffleGraph, MPI_COMM_WORLD);
-      }
-      recv_thread_dst.join();
-      #ifdef PRINT_DEBUG_MESSAGES
-      printf("machine(%d) got %lu symmetric edges\n", partition_id, recv_outgoing_edges);
-      #endif
+        for (int i=0;i<partitions;i++) {
+          if (buffered_edges[i]==0) continue;
+          MPI_Send(send_buffer[i].data(), edge_unit_size * buffered_edges[i], MPI_CHAR, i, ShuffleGraph, MPI_COMM_WORLD);
+          buffered_edges[i] = 0;
+        }
+        for (int i=0;i<partitions;i++) {
+          char c = 0;
+          MPI_Send(&c, 1, MPI_CHAR, i, ShuffleGraph, MPI_COMM_WORLD);
+        }
+        recv_thread_dst.join();
+        #ifdef PRINT_DEBUG_MESSAGES
+        printf("machine(%d) got %lu symmetric edges\n", partition_id, recv_outgoing_edges);
+        #endif
     }
     compressed_outgoing_adj_vertices = new VertexId [sockets];
     compressed_outgoing_adj_index = new CompressedAdjIndexUnit * [sockets];
@@ -723,7 +723,7 @@ public:
       numa_bitmask_setbit(mask, (unsigned)s_i);
       compressed_outgoing_adj_index[s_i] = (CompressedAdjIndexUnit *)malloc(sizeof(CompressedAdjIndexUnit) * (compressed_outgoing_adj_vertices[s_i] + 1));
       assert(compressed_outgoing_adj_index[s_i] != NULL);
-      assert(mbind((void *)compressed_outgoing_adj_index[s_i], sizeof(CompressedAdjIndexUnit) * (compressed_outgoing_adj_vertices[s_i] + 1), MPOL_BIND, mask, sockets, 0) != -1);
+      assert(mbind((void *)compressed_outgoing_adj_index[s_i], sizeof(CompressedAdjIndexUnit) * (compressed_outgoing_adj_vertices[s_i] + 1), MPOL_BIND, mask->maskp, sockets, 0) != -1);
 
       compressed_outgoing_adj_index[s_i][0].index = 0;
       EdgeId last_e_i = 0;
@@ -748,7 +748,7 @@ public:
       //outgoing_adj_list[s_i] = (AdjUnit<EdgeData>*)numa_alloc_onnode(unit_size * outgoing_edges[s_i], s_i);
       outgoing_adj_list[s_i] = (AdjUnit<EdgeData> *)malloc(unit_size * outgoing_edges[s_i]);
       assert(outgoing_adj_list[s_i] != NULL);
-      assert(mbind((void *)outgoing_adj_list[s_i], unit_size * outgoing_edges[s_i], MPOL_BIND, mask, sockets, 0) != -1);
+      assert(mbind((void *)outgoing_adj_list[s_i], unit_size * outgoing_edges[s_i], MPOL_BIND, mask->maskp, sockets, 0) != -1);
       numa_bitmask_free(mask);
     }
     {
@@ -1113,7 +1113,7 @@ public:
       numa_bitmask_setbit(mask, (unsigned)s_i);
       outgoing_adj_index[s_i] = (EdgeId *)malloc(sizeof(EdgeId) * (vertices + 1));
       assert(mbind((void *)outgoing_adj_index[s_i], sizeof(EdgeId) * (vertices + 1),
-		      MPOL_BIND, mask, sockets, 0) != -1);
+		      MPOL_BIND, mask->maskp, sockets, 0) != -1);
       numa_bitmask_free(mask);
     }
     {
@@ -1183,7 +1183,7 @@ public:
               EdgeUnit<EdgeData> edge = ((EdgeUnit<EdgeData> *)map)[e_i];
               VertexId dst = edge.dst;
               int i = get_partition_id(dst);
-              memcpy(send_buffer[i].data() + edge_unit_size * buffered_edges[i], MPI_CHAR, i, ShuffleGraph, MPI_COMM_WORLD);
+              memcpy(send_buffer[i].data() + edge_unit_size * buffered_edges[i], &edge, edge_unit_size);
               buffered_edges[i] += 1;
               if(buffered_edges[i] == CHUNKSIZE) {
           	    MPI_Send(send_buffer[i].data(), edge_unit_size * buffered_edges[i], MPI_CHAR, i, ShuffleGraph, MPI_COMM_WORLD);
@@ -1220,7 +1220,7 @@ public:
       numa_bitmask_setbit(mask, (unsigned)s_i);
       compressed_outgoing_adj_index[s_i] = (CompressedAdjIndexUnit *)malloc(sizeof(CompressedAdjIndexUnit) * (compressed_outgoing_adj_vertices[s_i] + 1));
       assert(compressed_outgoing_adj_index[s_i] != NULL);
-      assert(mbind((void *)compressed_outgoing_adj_index[s_i], sizeof(CompressedAdjIndexUnit) * (compressed_outgoing_adj_vertices[s_i] + 1), MPOL_BIND, mask, sockets, 0) != -1);
+      assert(mbind((void *)compressed_outgoing_adj_index[s_i], sizeof(CompressedAdjIndexUnit) * (compressed_outgoing_adj_vertices[s_i] + 1), MPOL_BIND, mask->maskp, sockets, 0) != -1);
 
       compressed_outgoing_adj_index[s_i][0].index = 0;
       EdgeId last_e_i = 0;
@@ -1245,7 +1245,7 @@ public:
       //outgoing_adj_list[s_i] = (AdjUnit<EdgeData>*)numa_alloc_onnode(unit_size * outgoing_edges[s_i], s_i);
       outgoing_adj_list[s_i] = (AdjUnit<EdgeData> *)malloc(unit_size * outgoing_edges[s_i]);
       assert(outgoing_adj_list[s_i] != NULL);
-      assert(mbind((void *)outgoing_adj_list[s_i], unit_size * outgoing_edges[s_i], MPOL_BIND, mask, sockets, 0) != -1);
+      assert(mbind((void *)outgoing_adj_list[s_i], unit_size * outgoing_edges[s_i], MPOL_BIND, mask->maskp, sockets, 0) != -1);
       numa_bitmask_free(mask);
     }
     {
@@ -1355,7 +1355,7 @@ public:
       //incoming_adj_index[s_i] = (EdgeId*)numa_alloc_onnode(sizeof(EdgeId) * (vertices+1), s_i);
       incoming_adj_index[s_i] = (EdgeId *)malloc(sizeof(EdgeId) * (vertices + 1));
       assert(incoming_adj_index[s_i] != NULL);
-      assert(mbind((void *)incoming_adj_index[s_i], sizeof(EdgeId) * (vertices + 1), MPOL_BIND, mask, sockets, 0) != -1);
+      assert(mbind((void *)incoming_adj_index[s_i], sizeof(EdgeId) * (vertices + 1), MPOL_BIND, mask->maskp, sockets, 0) != -1);
       numa_bitmask_free(mask);
     }
     {
@@ -1462,7 +1462,7 @@ public:
       compressed_incoming_adj_index[s_i] = (CompressedAdjIndexUnit *)malloc(sizeof(CompressedAdjIndexUnit) * (compressed_incoming_adj_vertices[s_i] + 1));
       assert(compressed_incoming_adj_index[s_i] != NULL);
       assert(mbind((void *)compressed_incoming_adj_index[s_i], sizeof(CompressedAdjIndexUnit) * (compressed_incoming_adj_vertices[s_i] + 1), MPOL_BIND,
-			      mask, sockets, 0) != -1);
+			      mask->maskp, sockets, 0) != -1);
 
       compressed_incoming_adj_index[s_i][0].index = 0;
       EdgeId last_e_i = 0;
@@ -1487,7 +1487,7 @@ public:
       //incoming_adj_list[s_i] = (AdjUnit<EdgeData>*)numa_alloc_onnode(unit_size * incoming_edges[s_i], s_i);
       incoming_adj_list[s_i] = (AdjUnit<EdgeData> *)malloc(unit_size * incoming_edges[s_i]);
       assert(incoming_adj_list[s_i] != NULL);
-      assert(mbind((void *)incoming_adj_list[s_i], unit_size * incoming_edges[s_i], MPOL_BIND, mask, sockets, 0) != -1);
+      assert(mbind((void *)incoming_adj_list[s_i], unit_size * incoming_edges[s_i], MPOL_BIND, mask->maskp, sockets, 0) != -1);
       numa_bitmask_free(mask);
     }
     {
