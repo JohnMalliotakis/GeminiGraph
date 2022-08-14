@@ -23,8 +23,11 @@ struct thread_info {
 	/* Parsing flags */
 	char weighted;
 	char one_indexed;
+	char gen_weights;
 	char *input_file;
 	unsigned long max_vID;
+	/* Used by rand_r for random weight generation */
+	unsigned *thread_seed;
 };
 
 char *copy_string(char *input)
@@ -133,6 +136,11 @@ void *edge_parsing_thread(void *arg)
 		if(info->weighted){
 			memcpy(iter, &weight, sizeof(float));
 			iter += sizeof(float);
+		}else if(info->gen_weights){
+			/* Random float weight in [0, 1) */
+			weight = ((float)rand_r(info->thread_seed)) / RAND_MAX;
+			memcpy(iter, &weight, sizeof(float));
+			iter += sizeof(float);
 		}
 		
 		free(line_read);
@@ -148,10 +156,12 @@ int main(int argc, char *argv[])
 {
 	int ret = 0, i, opt, output_fd = -1;
 	unsigned threads = 32;
+	unsigned *thread_seeds = NULL;
 	unsigned long edges = 1000, edges_per_thread, max_vID = 0UL;
 	char *input_path = NULL, *output_path = NULL, *strend;
 	char weighted_graph = 0;
 	char one_indexed = 0;
+	char generate_weights = 0;
 	pthread_t *thread_arr = NULL;
 	struct thread_info *info_arr = NULL;
 	off_t output_file_size;
@@ -160,7 +170,7 @@ int main(int argc, char *argv[])
 
 	assert(sizeof(long unsigned) == sizeof(uint64_t));
 
-	while((opt = getopt(argc, argv, "t:e:f:o:wih")) != -1){
+	while((opt = getopt(argc, argv, "t:e:f:o:waih")) != -1){
 		switch(opt) {
 			case 't':
 				threads = atoi(optarg);
@@ -188,17 +198,29 @@ int main(int argc, char *argv[])
 					exit(EXIT_FAILURE);
 				break;
 			case 'w':
+				if(generate_weights){
+					fprintf(stderr, "Cannot generate weights for weighted input graph!\n");
+					exit(EXIT_FAILURE);
+				}
 				weighted_graph = 1;
 				break;
+			case 'a':
+				if(weighted_graph){
+					fprintf(stderr, "Cannot generate weights for weighted input graph!\n");
+					exit(EXIT_FAILURE);
+				}
+				generate_weights = 1;
+				break;
+
 			case 'i':
 				one_indexed = 1;
 				break;
 			case 'h':
-				fprintf(stderr, "Usage: %s -t <num_threads> -e <num_edges> -f <input file path> -o <output file path> [-w: Indicate weighted input] [-i: Indicate 1-indexed edge list]\n",
+				fprintf(stderr, "Usage: %s -t <num_threads> -e <num_edges> -f <input file path> -o <output file path> [-w: Indicate weighted input] [-a: Generate random weights] [-i: Indicate 1-indexed edge list]\n",
 						argv[0]);
 				exit(0);
 			default:
-				fprintf(stderr, "Usage: %s -t <num_threads> -e <num_edges> -f <input file path> -o <output file path> [-w: Indicate weighted input] [-i: Indicate 1-indexed edge list]\n",
+				fprintf(stderr, "Usage: %s -t <num_threads> -e <num_edges> -f <input file path> -o <output file path> [-w: Indicate weighted input] [-a: Generate random weights] [-i: Indicate 1-indexed edge list]\n",
 						argv[0]);
 				exit(EXIT_FAILURE);
 				break;
@@ -219,6 +241,30 @@ int main(int argc, char *argv[])
 			ret = EXIT_FAILURE;
 			goto out;
 		}
+	}
+
+	if(generate_weights){
+		int randfd;
+		thread_seeds = (unsigned *)malloc(threads * sizeof(unsigned));
+		if(!thread_seeds){
+			perror("malloc");
+			ret = EXIT_FAILURE;
+			goto out;
+		}
+		/* Open /dev/urandom and read one unsigned seed per thread */
+		randfd = open("/dev/urandom", O_RDONLY);
+		if(randfd == -1){
+			perror("open");
+			ret = EXIT_FAILURE;
+			goto out;
+		}
+		if(read(randfd, thread_seeds, threads * sizeof(unsigned)) != threads * sizeof(unsigned)){
+			fprintf(stderr, "Read error/insufficient bytes /dev/urandom\n");
+			ret = EXIT_FAILURE;
+			close(randfd);
+			goto out;
+		}
+		close(randfd);
 	}
 
 	thread_arr = (pthread_t *)malloc(threads * sizeof(pthread_t));
@@ -276,6 +322,8 @@ int main(int argc, char *argv[])
 		if(i == threads - 1)
 			info_arr[i].edges_to_process += edges % threads;
 		info_arr[i].weighted = weighted_graph;
+		info_arr[i].gen_weights = generate_weights;
+		info_arr[i].thread_seed = generate_weights ? (&thread_seeds[i]) : NULL;
 		info_arr[i].one_indexed = one_indexed;
 		info_arr[i].input_file = input_path;
 		info_arr[i].output_buf = (char *)map + (i * edges_per_thread * size_per_edge);
@@ -318,6 +366,8 @@ out:
 		free(input_path);
 	if(output_path)
 		free(output_path);
+	if(thread_seeds)
+		free(thread_seeds);
 	if(thread_arr)
 		free(thread_arr);
 	if(info_arr)
