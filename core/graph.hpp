@@ -63,6 +63,7 @@ struct MessageBuffer {
   size_t capacity;
   int count; // the actual size (i.e. bytes) should be sizeof(element) * count
   char * data;
+  unsigned socket;
   MessageBuffer () {
     capacity = 0;
     count = 0;
@@ -76,6 +77,8 @@ struct MessageBuffer {
     //data = (char *)malloc(PAGESIZE, capacity);
     //assert(data != NULL);
     assert(posix_memalign((void **)&data, PAGESIZE, capacity) == 0);
+    numa_tonode_memory(data, capacity, socket_id);
+    socket = socket_id;
   }
   void resize(size_t new_capacity) {
     if (new_capacity > capacity) {
@@ -84,6 +87,7 @@ struct MessageBuffer {
       //assert(new_data!=NULL);
       char *new_data;
       assert(posix_memalign((void **)&new_data, PAGESIZE, new_capacity) == 0);
+      numa_tonode_memory(new_data, new_capacity, socket);
       // Copy over old data to emulate realloc behaviour
       memcpy(new_data, data, capacity);
       free(data);
@@ -288,14 +292,9 @@ public:
   T * alloc_interleaved_vertex_array() {
     // jmal: replace with malloc + mbind call setting policy to MPOL_INTERLEAVE
     //T * array = (T *)numa_alloc_interleaved( sizeof(T) * vertices );
-    //T * array = (T *)malloc(sizeof(T) * vertices);
-    //assert(array!=NULL);
     T *array;
     assert(posix_memalign((void **)&array, PAGESIZE, sizeof(T) * vertices) == 0);
-    if(mbind(array, sizeof(T) * vertices, MPOL_INTERLEAVE, numa_all_nodes_ptr->maskp, numa_all_nodes_ptr->size + 1, 0) == -1){
-	    perror("mbind");
-	    assert(false);
-    }
+    numa_interleave_memory(array, sizeof(T) * vertices, numa_all_nodes_ptr);
     return array;
   }
 
@@ -591,13 +590,9 @@ public:
       outgoing_adj_bitmap[s_i]->clear();
       // jmal: scales with graph size, replace with malloc
       //outgoing_adj_index[s_i] = (EdgeId*)numa_alloc_onnode(sizeof(EdgeId) * (vertices+1), s_i);
-      struct bitmask *mask = numa_allocate_nodemask();
-      numa_bitmask_setbit(mask, (unsigned)s_i);
       //outgoing_adj_index[s_i] = (EdgeId *)malloc(sizeof(EdgeId) * (vertices + 1));
       assert(posix_memalign((void **)&outgoing_adj_index[s_i], PAGESIZE, sizeof(EdgeId) * (vertices + 1)) == 0);
-      assert(mbind((void *)outgoing_adj_index[s_i], sizeof(EdgeId) * (vertices + 1),
-		      MPOL_BIND, mask->maskp, mask->size + 1, 0) != -1);
-      numa_bitmask_free(mask);
+      numa_tonode_memory(outgoing_adj_index[s_i], sizeof(EdgeId) * (vertices + 1), s_i);
     }
     {
       std::thread recv_thread_dst([&](){
@@ -730,12 +725,8 @@ public:
         }
       }
       //compressed_outgoing_adj_index[s_i] = (CompressedAdjIndexUnit*)numa_alloc_onnode( sizeof(CompressedAdjIndexUnit) * (compressed_outgoing_adj_vertices[s_i] + 1) , s_i );
-      struct bitmask *mask = numa_allocate_nodemask();
-      numa_bitmask_setbit(mask, (unsigned)s_i);
-      //compressed_outgoing_adj_index[s_i] = (CompressedAdjIndexUnit *)malloc(sizeof(CompressedAdjIndexUnit) * (compressed_outgoing_adj_vertices[s_i] + 1));
-      //assert(compressed_outgoing_adj_index[s_i] != NULL);
       assert(posix_memalign((void **)&compressed_outgoing_adj_index[s_i], PAGESIZE, sizeof(CompressedAdjIndexUnit) * (compressed_outgoing_adj_vertices[s_i] + 1)) == 0);
-      assert(mbind((void *)compressed_outgoing_adj_index[s_i], sizeof(CompressedAdjIndexUnit) * (compressed_outgoing_adj_vertices[s_i] + 1), MPOL_BIND, mask->maskp, mask->size + 1, 0) != -1);
+      numa_tonode_memory(compressed_outgoing_adj_index[s_i], sizeof(CompressedAdjIndexUnit) * (compressed_outgoing_adj_vertices[s_i] + 1), s_i);
 
       compressed_outgoing_adj_index[s_i][0].index = 0;
       EdgeId last_e_i = 0;
@@ -758,11 +749,8 @@ public:
       printf("part(%d) E_%d has %lu symmetric edges\n", partition_id, s_i, outgoing_edges[s_i]);
       #endif
       //outgoing_adj_list[s_i] = (AdjUnit<EdgeData>*)numa_alloc_onnode(unit_size * outgoing_edges[s_i], s_i);
-      //outgoing_adj_list[s_i] = (AdjUnit<EdgeData> *)malloc(unit_size * outgoing_edges[s_i]);
-      //assert(outgoing_adj_list[s_i] != NULL);
       assert(posix_memalign((void **)&outgoing_adj_list[s_i], PAGESIZE, unit_size * outgoing_edges[s_i]) == 0);
-      assert(mbind((void *)outgoing_adj_list[s_i], unit_size * outgoing_edges[s_i], MPOL_BIND, mask->maskp, mask->size + 1, 0) != -1);
-      numa_bitmask_free(mask);
+      numa_tonode_memory((void *)outgoing_adj_list[s_i], unit_size * outgoing_edges[s_i], s_i);
     }
     {
       std::thread recv_thread_dst([&](){
@@ -1120,17 +1108,8 @@ public:
       outgoing_adj_bitmap[s_i] = new Bitmap (vertices);
       outgoing_adj_bitmap[s_i]->clear();
       //outgoing_adj_index[s_i] = (EdgeId*)numa_alloc_onnode(sizeof(EdgeId) * (vertices+1), s_i);
-      struct bitmask *mask = numa_allocate_nodemask();
-      numa_bitmask_setbit(mask, (unsigned)s_i);
-      //outgoing_adj_index[s_i] = (EdgeId *)malloc(sizeof(EdgeId) * (vertices + 1));
-      //assert(outgoing_adj_index[s_i] != NULL);
       assert(posix_memalign((void **)&outgoing_adj_index[s_i], PAGESIZE, sizeof(EdgeId) * (vertices + 1)) == 0);
-      if(mbind((void *)outgoing_adj_index[s_i], sizeof(EdgeId) * (vertices + 1),
-			      MPOL_BIND, mask->maskp, mask->size + 1, 0) == -1){
-	      perror("mbind");
-	      assert(false);
-      }
-      numa_bitmask_free(mask);
+      numa_tonode_memory(outgoing_adj_index[s_i], sizeof(EdgeId) * (vertices + 1), s_i);
     }
     {
       std::thread recv_thread_dst([&](){
@@ -1232,12 +1211,8 @@ public:
         }
       }
       //compressed_outgoing_adj_index[s_i] = (CompressedAdjIndexUnit*)numa_alloc_onnode( sizeof(CompressedAdjIndexUnit) * (compressed_outgoing_adj_vertices[s_i] + 1) , s_i );
-      struct bitmask *mask = numa_allocate_nodemask();
-      numa_bitmask_setbit(mask, (unsigned)s_i);
-      //compressed_outgoing_adj_index[s_i] = (CompressedAdjIndexUnit *)malloc(sizeof(CompressedAdjIndexUnit) * (compressed_outgoing_adj_vertices[s_i] + 1));
-      //assert(compressed_outgoing_adj_index[s_i] != NULL);
       assert(posix_memalign((void **)&compressed_outgoing_adj_index[s_i], PAGESIZE, sizeof(CompressedAdjIndexUnit) * (compressed_outgoing_adj_vertices[s_i] + 1)) == 0);
-      assert(mbind((void *)compressed_outgoing_adj_index[s_i], sizeof(CompressedAdjIndexUnit) * (compressed_outgoing_adj_vertices[s_i] + 1), MPOL_BIND, mask->maskp, mask->size + 1, 0) != -1);
+      numa_tonode_memory(compressed_outgoing_adj_index[s_i], sizeof(CompressedAdjIndexUnit) * (compressed_outgoing_adj_vertices[s_i] + 1), s_i);
 
       compressed_outgoing_adj_index[s_i][0].index = 0;
       EdgeId last_e_i = 0;
@@ -1260,11 +1235,8 @@ public:
       printf("part(%d) E_%d has %lu sparse mode edges\n", partition_id, s_i, outgoing_edges[s_i]);
       #endif
       //outgoing_adj_list[s_i] = (AdjUnit<EdgeData>*)numa_alloc_onnode(unit_size * outgoing_edges[s_i], s_i);
-      //outgoing_adj_list[s_i] = (AdjUnit<EdgeData> *)malloc(unit_size * outgoing_edges[s_i]);
-      //assert(outgoing_adj_list[s_i] != NULL);
       assert(posix_memalign((void **)&outgoing_adj_list[s_i], PAGESIZE, unit_size * outgoing_edges[s_i]) == 0);
-      assert(mbind((void *)outgoing_adj_list[s_i], unit_size * outgoing_edges[s_i], MPOL_BIND, mask->maskp, mask->size + 1, 0) != -1);
-      numa_bitmask_free(mask);
+      numa_tonode_memory(outgoing_adj_list[s_i], unit_size * outgoing_edges[s_i], s_i);
     }
     {
       std::thread recv_thread_dst([&](){
@@ -1367,15 +1339,9 @@ public:
     for (int s_i=0;s_i<sockets;s_i++) {
       incoming_adj_bitmap[s_i] = new Bitmap (vertices);
       incoming_adj_bitmap[s_i]->clear();
-      struct bitmask *mask;
-      mask = numa_allocate_nodemask();
-      numa_bitmask_setbit(mask, (unsigned)s_i);
       //incoming_adj_index[s_i] = (EdgeId*)numa_alloc_onnode(sizeof(EdgeId) * (vertices+1), s_i);
-      //incoming_adj_index[s_i] = (EdgeId *)malloc(sizeof(EdgeId) * (vertices + 1));
-      //assert(incoming_adj_index[s_i] != NULL);
       assert(posix_memalign((void **)&incoming_adj_index[s_i], PAGESIZE, sizeof(EdgeId) * (vertices + 1)) == 0);
-      assert(mbind((void *)incoming_adj_index[s_i], sizeof(EdgeId) * (vertices + 1), MPOL_BIND, mask->maskp, mask->size + 1, 0) != -1);
-      numa_bitmask_free(mask);
+      numa_tonode_memory(incoming_adj_index[s_i], sizeof(EdgeId) * (vertices + 1), s_i);
     }
     {
       std::thread recv_thread_src([&](){
@@ -1475,14 +1441,9 @@ public:
           compressed_incoming_adj_vertices[s_i] += 1;
         }
       }
-      struct bitmask *mask = numa_allocate_nodemask();
-      numa_bitmask_setbit(mask, (unsigned)s_i);
       //compressed_incoming_adj_index[s_i] = (CompressedAdjIndexUnit*)numa_alloc_onnode( sizeof(CompressedAdjIndexUnit) * (compressed_incoming_adj_vertices[s_i] + 1) , s_i );
-      //compressed_incoming_adj_index[s_i] = (CompressedAdjIndexUnit *)malloc(sizeof(CompressedAdjIndexUnit) * (compressed_incoming_adj_vertices[s_i] + 1));
-      //assert(compressed_incoming_adj_index[s_i] != NULL);
       assert(posix_memalign((void **)&compressed_incoming_adj_index[s_i], PAGESIZE, sizeof(CompressedAdjIndexUnit) * (compressed_incoming_adj_vertices[s_i] + 1)) == 0);
-      assert(mbind((void *)compressed_incoming_adj_index[s_i], sizeof(CompressedAdjIndexUnit) * (compressed_incoming_adj_vertices[s_i] + 1), MPOL_BIND,
-			      mask->maskp, mask->size + 1, 0) != -1);
+      numa_tonode_memory(compressed_incoming_adj_index[s_i], sizeof(CompressedAdjIndexUnit) * (compressed_incoming_adj_vertices[s_i] + 1), s_i);
 
       compressed_incoming_adj_index[s_i][0].index = 0;
       EdgeId last_e_i = 0;
@@ -1505,11 +1466,8 @@ public:
       printf("part(%d) E_%d has %lu dense mode edges\n", partition_id, s_i, incoming_edges[s_i]);
       #endif
       //incoming_adj_list[s_i] = (AdjUnit<EdgeData>*)numa_alloc_onnode(unit_size * incoming_edges[s_i], s_i);
-      //incoming_adj_list[s_i] = (AdjUnit<EdgeData> *)malloc(unit_size * incoming_edges[s_i]);
-      //assert(incoming_adj_list[s_i] != NULL);
       assert(posix_memalign((void **)&incoming_adj_list[s_i], PAGESIZE, unit_size * incoming_edges[s_i]) == 0);
-      assert(mbind((void *)incoming_adj_list[s_i], unit_size * incoming_edges[s_i], MPOL_BIND, mask->maskp, mask->size + 1, 0) != -1);
-      numa_bitmask_free(mask);
+      numa_tonode_memory(incoming_adj_list[s_i], unit_size * incoming_edges[s_i], s_i);
     }
     {
       std::thread recv_thread_src([&](){
