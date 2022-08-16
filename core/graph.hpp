@@ -62,6 +62,7 @@ struct MessageBuffer {
   size_t capacity;
   int count; // the actual size (i.e. bytes) should be sizeof(element) * count
   char * data;
+  unsigned socket;
   MessageBuffer () {
     capacity = 0;
     count = 0;
@@ -71,11 +72,15 @@ struct MessageBuffer {
     capacity = 4096;
     count = 0;
     data = (char*)numa_alloc_onnode(capacity, socket_id);
+    socket = socket_id;
   }
   void resize(size_t new_capacity) {
     if (new_capacity > capacity) {
-      char * new_data = (char*)numa_realloc(data, capacity, new_capacity);
+      //char * new_data = (char*)numa_realloc(data, capacity, new_capacity);
+      char *new_data = (char *)numa_alloc_onnode(new_capacity, socket);
       assert(new_data!=NULL);
+      memcpy(new_data, data, capacity);
+      numa_free(data, capacity);
       data = new_data;
       capacity = new_capacity;
     }
