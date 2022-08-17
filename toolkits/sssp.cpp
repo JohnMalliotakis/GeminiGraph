@@ -108,29 +108,34 @@ void compute(Graph<Weight> * graph, VertexId root) {
 int main(int argc, char ** argv) {
   MPI_Instance mpi(&argc, &argv);
   char *end;
+  VertexId root;
 
-  if (argc<3) {
-    printf("sssp [file] [vertices]\n");
-    exit(-1);
+  if(argc < 3) {
+	  printf("sssp <file> <vertices> [source]\n");
+	  exit(-1);
   }
+  
+  VertexId vertices = std::strtoul(argv[2], &end, 10);
+  end = NULL;
+
+  if(argc >= 4) {
+	  root = std::strtoul(argv[3], &end, 10);
+  } else {
+	  // Setup random number generation for SSSP source
+	  std::random_device rdev;
+	  std::mt19937 gen(rdev()); // Seed for random generation
+	  std::uniform_int_distribution<unsigned long> udist(0, vertices - 1);
+	  root = udist(gen);
+	  // All MPI hosts must have the same source
+	  // Just choose the largest random number
+	  // across all machines
+	  MPI_Allreduce(MPI_IN_PLACE, &root, 1, MPI_UNSIGNED_LONG, MPI_MAX, MPI_COMM_WORLD);
+	  printf("Using randomly generated source vertex %lu\n", root);
+  } 
 
   Graph<Weight> * graph;
   graph = new Graph<Weight>();
-
-  VertexId vertices = std::strtoul(argv[2], &end, 10);
   graph->load_directed(argv[1], vertices);
-
-  // Setup random number generation for SSSP source
-  std::random_device rdev;
-  std::mt19937 gen(rdev()); // Seed for random generation
-  std::uniform_int_distribution<unsigned long> udist(0, vertices - 1);
-  VertexId root = udist(gen);
-
-  // All MPI hosts must have the same source
-  // Just choose the largest random number selected
-  // across all machines
-  MPI_Allreduce(MPI_IN_PLACE, &root, 1, MPI_UNSIGNED_LONG, MPI_MAX, MPI_COMM_WORLD);
-  printf("Using source vertex %lu\n", root);
 
   compute(graph, root);
   for (int run=0;run<5;run++) {
