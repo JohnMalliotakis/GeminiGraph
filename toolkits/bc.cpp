@@ -407,9 +407,10 @@ void compute_compact(Graph<Empty> * graph, VertexId root) {
 int main(int argc, char ** argv) {
   MPI_Instance mpi(&argc, &argv);
   char *end;
+  VertexId root;
 
   if (argc<3) {
-    printf("bc [file] [vertices]\n");
+    printf("bc <file> <vertices> [source]\n");
     exit(-1);
   }
 
@@ -417,19 +418,24 @@ int main(int argc, char ** argv) {
   graph = new Graph<Empty>();
   
   VertexId vertices = std::strtoul(argv[2], &end, 10);
+  end = NULL;
   graph->load_directed(argv[1], vertices);
 
-  // Setup random number generation for SSSP source
-  std::random_device rdev;
-  std::mt19937 gen(rdev()); // Seed for random generation
-  std::uniform_int_distribution<unsigned long> udist(0, vertices - 1);
-  VertexId root = udist(gen);
-
-  // All MPI hosts must have the same source
-  // Just choose the largest random number selected
-  // across all machines
-  MPI_Allreduce(MPI_IN_PLACE, &root, 1, MPI_UNSIGNED_LONG, MPI_MAX, MPI_COMM_WORLD);
-  printf("Using source vertex %lu\n", root);
+  if(argc >= 4){
+	  // Get source vertex from command line
+	  root = std::strtoul(argv[3], &end, 10);
+  } else {
+  	  // Setup random number generation for BC source
+  	  std::random_device rdev;
+  	  std::mt19937 gen(rdev()); // Seed for random generation
+  	  std::uniform_int_distribution<unsigned long> udist(0, vertices - 1);
+  	  root = udist(gen);
+  	  // All MPI hosts must have the same source
+  	  // Just choose the largest random number selected
+  	  // across all machines
+  	  MPI_Allreduce(MPI_IN_PLACE, &root, 1, MPI_UNSIGNED_LONG, MPI_MAX, MPI_COMM_WORLD);
+  	  printf("Using randomly generated source vertex %lu\n", root);
+  }
 
   #if COMPACT
   compute_compact(graph, root);
