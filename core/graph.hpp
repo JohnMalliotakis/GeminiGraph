@@ -155,10 +155,9 @@ public:
   MessageBuffer *** send_buffer; // MessageBuffer* [partitions] [sockets]; numa-aware
   MessageBuffer *** recv_buffer; // MessageBuffer* [partitions] [sockets]; numa-aware
 
-  Graph() {
+  Graph(int num_threads) {
 #if 0
     threads = numa_num_configured_cpus();
-#endif
     char *omp_env_threads = getenv("OMP_NUM_THREADS");
     if(!omp_env_threads){
 	    fprintf(stderr, "Export OMP_NUM_THREADS to configure the amount of threads to use!\n");
@@ -166,6 +165,8 @@ public:
     }
     threads = std::atoi(omp_env_threads);
     assert(threads > 0);
+#endif
+    threads = num_threads;
 
     if(threads > numa_num_configured_cpus())
 	    fprintf(stderr, "WARNING: Configured threads = %d, available hardware threads: %d\n",

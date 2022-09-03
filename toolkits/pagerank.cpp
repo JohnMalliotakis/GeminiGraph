@@ -131,17 +131,21 @@ void compute(Graph<Empty> * graph, int iterations) {
 int main(int argc, char ** argv) {
   MPI_Instance mpi(&argc, &argv);
   char *end;
+  int threads;
 
-  if (argc<4) {
-    printf("pagerank [file] [vertices] [iterations]\n");
+  if (argc<5) {
+    printf("pagerank [threads] [file] [vertices] [iterations]\n");
     exit(-1);
   }
 
+  threads = std::atoi(argv[1]);
+  assert(threads > 0);
+
   Graph<Empty> * graph;
-  graph = new Graph<Empty>();
+  graph = new Graph<Empty>(threads);
   //graph->load_directed(argv[1], std::atol(argv[2]));
-  graph->load_directed(argv[1], std::strtoul(argv[2], &end, 10));
-  int iterations = std::atoi(argv[3]);
+  graph->load_directed(argv[2], std::strtoul(argv[3], &end, 10));
+  int iterations = std::atoi(argv[4]);
 
   compute(graph, iterations);
   for (int run=0;run<5;run++) {

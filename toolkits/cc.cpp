@@ -111,16 +111,20 @@ void compute(Graph<Empty> * graph) {
 int main(int argc, char ** argv) {
   MPI_Instance mpi(&argc, &argv);
   char *end;
+  int threads;
 
-  if (argc<3) {
-    printf("cc [file] [vertices]\n");
+  if (argc<4) {
+    printf("cc [threads] [file] [vertices]\n");
     exit(-1);
   }
 
+  threads = std::atoi(argv[1]);
+  assert(threads > 0);
+
   Graph<Empty> * graph;
-  graph = new Graph<Empty>();
+  graph = new Graph<Empty>(threads);
   //graph->load_undirected_from_directed(argv[1], std::atoi(argv[2]));
-  graph->load_undirected_from_directed(argv[1], std::strtoul(argv[2], &end, 10));
+  graph->load_undirected_from_directed(argv[2], std::strtoul(argv[3], &end, 10));
 
   compute(graph);
   for (int run=0;run<5;run++) {

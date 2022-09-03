@@ -408,22 +408,26 @@ int main(int argc, char ** argv) {
   MPI_Instance mpi(&argc, &argv);
   char *end;
   VertexId root;
+  int threads;
 
-  if (argc<3) {
-    printf("bc <file> <vertices> [source]\n");
+  if (argc<4) {
+    printf("bc <threads> <file> <vertices> [source]\n");
     exit(-1);
   }
 
-  Graph<Empty> * graph;
-  graph = new Graph<Empty>();
-  
-  VertexId vertices = std::strtoul(argv[2], &end, 10);
-  end = NULL;
-  graph->load_directed(argv[1], vertices);
+  threads = std::atoi(argv[1]);
+  assert(threads > 0);
 
-  if(argc >= 4){
+  Graph<Empty> * graph;
+  graph = new Graph<Empty>(threads);
+  
+  VertexId vertices = std::strtoul(argv[3], &end, 10);
+  end = NULL;
+  graph->load_directed(argv[2], vertices);
+
+  if(argc >= 5){
 	  // Get source vertex from command line
-	  root = std::strtoul(argv[3], &end, 10);
+	  root = std::strtoul(argv[4], &end, 10);
   } else {
   	  // Setup random number generation for BC source
   	  std::random_device rdev;

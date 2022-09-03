@@ -109,17 +109,21 @@ int main(int argc, char ** argv) {
   MPI_Instance mpi(&argc, &argv);
   char *end;
   VertexId root;
+  int threads;
 
-  if(argc < 3) {
-	  printf("sssp <file> <vertices> [source]\n");
+  if(argc < 4) {
+	  printf("sssp <threads> <file> <vertices> [source]\n");
 	  exit(-1);
   }
   
-  VertexId vertices = std::strtoul(argv[2], &end, 10);
+  threads = std::atoi(argv[1]);
+  assert(threads > 0);
+
+  VertexId vertices = std::strtoul(argv[3], &end, 10);
   end = NULL;
 
-  if(argc >= 4) {
-	  root = std::strtoul(argv[3], &end, 10);
+  if(argc >= 5) {
+	  root = std::strtoul(argv[4], &end, 10);
   } else {
 	  // Setup random number generation for SSSP source
 	  std::random_device rdev;
@@ -134,8 +138,8 @@ int main(int argc, char ** argv) {
   } 
 
   Graph<Weight> * graph;
-  graph = new Graph<Weight>();
-  graph->load_directed(argv[1], vertices);
+  graph = new Graph<Weight>(threads);
+  graph->load_directed(argv[2], vertices);
 
   compute(graph, root);
   for (int run=0;run<5;run++) {
