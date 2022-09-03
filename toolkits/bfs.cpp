@@ -113,21 +113,25 @@ int main(int argc, char ** argv) {
   MPI_Instance mpi(&argc, &argv);
   char *end;
   VertexId root;
+  int threads;
 
-  if (argc<3) {
-    printf("bfs <file> <vertices> [source]\n");
+  if (argc<4) {
+    printf("bfs <threads> <file> <vertices> [source]\n");
     exit(-1);
   }
 
+  threads = std::atoi(argv[1]);
+  assert(threads > 0);
+
   Graph<Empty> * graph;
-  graph = new Graph<Empty>();
+  graph = new Graph<Empty>(threads);
 
-  VertexId vertices = std::strtoul(argv[2], &end, 10);
+  VertexId vertices = std::strtoul(argv[3], &end, 10);
   end = NULL;
-  graph->load_directed(argv[1], vertices);
+  graph->load_directed(argv[2], vertices);
 
-  if (argc >= 4) {
-	  root = std::strtoul(argv[3], &end, 10);
+  if (argc >= 5) {
+	  root = std::strtoul(argv[4], &end, 10);
   } else {
   	  // Setup random number generation for BFS source
   	  std::random_device rdev;
